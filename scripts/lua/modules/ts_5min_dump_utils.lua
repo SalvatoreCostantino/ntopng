@@ -202,6 +202,11 @@ function ts_dump.host_update_stats_rrds(when, hostname, host, ifstats, verbose)
       when, verbose)
   
   interface.select(tostring(ifstats.id)) 
+					   flows_as_client = host["unreachable_flows.as_client"],
+					   flows_as_server = host["unreachable_flows.as_server"]},
+      when, verbose)
+  
+  interface.select(tostring(ifstats.id))
    
   local host_ = interface.getHostInfo(hostname)
    
