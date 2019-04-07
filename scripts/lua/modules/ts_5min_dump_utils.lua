@@ -199,7 +199,19 @@ function ts_dump.host_update_stats_rrds(when, hostname, host, ifstats, verbose)
             flows_as_server = host["host_unreachable_flows.as_server"],
             flows_as_client = host["host_unreachable_flows.as_client"]},
       when, verbose)
-
+  
+  -- Number of echo request flows
+  ts_utils.append("host:echo_flows", {ifid = ifstats.id, host = hostname,
+            flows_as_server = host["echo_flows.as_server"],
+            flows_as_client = host["echo_flows.as_client"]},
+      when, verbose)
+  
+  -- Number of echo reply flows
+  ts_utils.append("host:echo_reply_flows", {ifid = ifstats.id, host = hostname,
+            flows_as_server = host["echo_reply_flows.as_server"],
+            flows_as_client = host["echo_reply_flows.as_client"]},
+      when, verbose)
+  
   -- Number of dns packets sent
   ts_utils.append("host:dns_qry_sent_rsp_rcvd", {ifid = ifstats.id, host = hostname,
             queries_packets = host["dns"]["sent"]["num_queries"],

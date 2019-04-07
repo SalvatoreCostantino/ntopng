@@ -51,7 +51,9 @@ class ICMPinfo {
   bool equal(const ICMPinfo * const icmp_info) const;
   void lua(lua_State* vm, AddressTree * ptree, NetworkInterface *iface, u_int16_t vlan_id) const;
   bool isPortUnreachable() const;
-  bool isHostUnreachable(u_int8_t proto) const;
+  bool isHostUnreachable() const;
+  bool isEchoRequest() const;
+  bool isEchoReply() const;
 };
 
 #endif /* _ICMP_INFO_H_ */

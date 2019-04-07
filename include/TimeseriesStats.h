@@ -32,6 +32,8 @@ class TimeseriesStats: public GenericTrafficElement {
   u_int32_t unreachable_flows_as_client, unreachable_flows_as_server;
   u_int32_t anomalous_flows_as_client, anomalous_flows_as_server;
   u_int32_t host_unreachable_flows_as_client, host_unreachable_flows_as_server;
+  u_int32_t echo_reply_flows_as_client, echo_reply_flows_as_server;
+  u_int32_t echo_flows_as_client, echo_flows_as_server;
   TrafficStats tcp_sent, tcp_rcvd;
   TrafficStats udp_sent, udp_rcvd;
   TrafficStats icmp_sent, icmp_rcvd;
@@ -41,17 +43,23 @@ class TimeseriesStats: public GenericTrafficElement {
   TimeseriesStats(Host * _host);
   virtual ~TimeseriesStats();
 
-  inline void incNumAnomalousFlows(bool as_client)   { if(as_client) anomalous_flows_as_client++; else anomalous_flows_as_server++; };
-  inline void incNumUnreachableFlows(bool as_server) { if(as_server) unreachable_flows_as_server++; else unreachable_flows_as_client++; }
-  inline void incNumHostUnreachableFlows(bool as_server) { if(as_server) host_unreachable_flows_as_server++; else host_unreachable_flows_as_client++; };
+  inline void incNumAnomalousFlows(bool as_client)        { if(as_client) anomalous_flows_as_client++; else anomalous_flows_as_server++; };
+  inline void incNumUnreachableFlows(bool as_server)      { if(as_server) unreachable_flows_as_server++; else unreachable_flows_as_client++; }
+  inline void incNumHostUnreachableFlows(bool as_server)  { if(as_server) host_unreachable_flows_as_server++; else host_unreachable_flows_as_client++; };
+  inline void incNumEchoReplyFlows(bool as_server)        { if(as_server) echo_reply_flows_as_server++; else echo_reply_flows_as_client++; }
+  inline void incNumEchoFlows(bool as_server)             { if(as_server) echo_flows_as_server++; else echo_flows_as_client++; };
   inline void incTotalAlerts() { total_alerts++; };
 
-  inline u_int32_t getTotalAnomalousNumFlowsAsClient() const { return(anomalous_flows_as_client);  };
-  inline u_int32_t getTotalAnomalousNumFlowsAsServer() const { return(anomalous_flows_as_server);  };
-  inline u_int32_t getTotalUnreachableNumFlowsAsClient() const { return(unreachable_flows_as_client);  };
-  inline u_int32_t getTotalUnreachableNumFlowsAsServer() const { return(unreachable_flows_as_server);  };
-  inline u_int32_t getTotalHostUnreachableNumFlowsAsClient() const { return(host_unreachable_flows_as_client);  };
-  inline u_int32_t getTotalHostUnreachableNumFlowsAsServer() const { return(host_unreachable_flows_as_server);  };
+  inline u_int32_t getTotalAnomalousNumFlowsAsClient() const        { return(anomalous_flows_as_client);  };
+  inline u_int32_t getTotalAnomalousNumFlowsAsServer() const        { return(anomalous_flows_as_server);  };
+  inline u_int32_t getTotalUnreachableNumFlowsAsClient() const      { return(unreachable_flows_as_client);  };
+  inline u_int32_t getTotalUnreachableNumFlowsAsServer() const      { return(unreachable_flows_as_server);  };
+  inline u_int32_t getTotalHostUnreachableNumFlowsAsClient() const  { return(host_unreachable_flows_as_client);  };
+  inline u_int32_t getTotalHostUnreachableNumFlowsAsServer() const  { return(host_unreachable_flows_as_server);  };
+  inline u_int32_t getTotalEchoReplyNumFlowsAsClient() const        { return(echo_reply_flows_as_client); };
+  inline u_int32_t getTotalEchoReplyNumFlowsAsServer() const        { return(echo_reply_flows_as_server); };
+  inline u_int32_t getTotalEchoNumFlowsAsClient() const             { return(echo_flows_as_client); };
+  inline u_int32_t getTotalEchoNumFlowsAsServer() const             { return(echo_flows_as_server); };
   inline u_int32_t getTotalAlerts() const { return(total_alerts); };
   void luaStats(lua_State* vm, NetworkInterface *iface, bool host_details, bool verbose, bool tsLua = false);
   virtual u_int16_t getNumActiveContactsAsClient() { return 0; }

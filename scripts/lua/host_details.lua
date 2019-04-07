@@ -1940,14 +1940,16 @@ drawGraphs(ifId, schema, tags, _GET["zoom"], url, selected_epoch, {
       {schema="host:traffic",                label=i18n("traffic")},
       {schema="host:flows",                  label=i18n("graphs.active_flows")},
       {schema="host:anomalous_flows",        label=i18n("graphs.total_anomalous_flows")},
-      {schema="host:unreachable_flows",      label=i18n("graphs.total_unreachable_flows")},
       {schema="host:contacts",               label=i18n("graphs.active_host_contacts")},
       {schema="host:total_alerts",           label=i18n("details.alerts")},
-      {schema="host:host_unreachable_flows", label="Host Unreachable Flows"},
+      {schema="host:unreachable_flows",      label=i18n("graphs.total_unreachable_flows")},
+      {schema="host:host_unreachable_flows", label=i18n("graphs.total_host_unreachable_flows")},
+      {schema="host:echo_flows",             label=i18n("graphs.total_echo_flows")},
+      {schema="host:echo_reply_flows",       label=i18n("graphs.total_echo_reply_flows")},
       {schema="host:dns_qry_sent_rsp_rcvd",  label=i18n("graphs.dns_qry_sent_rsp_rcvd")},
       {schema="host:dns_qry_rcvd_rsp_sent",  label=i18n("graphs.dns_qry_rcvd_rsp_sent")},
-      {schema="host:udp_pkts",               label="UDP Packets"},   
-      {schema="host:tcp_stats",              label="TCP Stats"},        
+      {schema="host:udp_pkts",               label=i18n("graphs.udp_packets")},
+      {schema="host:tcp_stats",              label=i18n("graphs.tcp_stats")},
 
       {schema="host:1d_delta_traffic_volume",  label="1 Day Traffic Delta"}, -- TODO localize
       {schema="host:1d_delta_flows",           label="1 Day Active Flows Delta"}, -- TODO localize

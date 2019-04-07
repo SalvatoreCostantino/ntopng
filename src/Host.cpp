@@ -565,6 +565,10 @@ void Host::lua(lua_State* vm, AddressTree *ptree,
   lua_push_uint64_table_entry(vm, "unreachable_flows.as_client", getTotalNumUnreachableOutgoingFlows());
   lua_push_uint64_table_entry(vm, "host_unreachable_flows.as_server", getTotalNumHostUnreachableIncomingFlows());
   lua_push_uint64_table_entry(vm, "host_unreachable_flows.as_client", getTotalNumHostUnreachableOutgoingFlows());
+  lua_push_uint64_table_entry(vm, "echo_flows.as_server", getTotalNumEchoIncomingFlows());
+  lua_push_uint64_table_entry(vm, "echo_flows.as_client", getTotalNumEchoOutgoingFlows());
+  lua_push_uint64_table_entry(vm, "echo_reply_flows.as_server", getTotalNumEchoReplyIncomingFlows());
+  lua_push_uint64_table_entry(vm, "echo_reply_flows.as_client", getTotalNumEchoReplyOutgoingFlows());
   lua_push_uint64_table_entry(vm, "total_alerts", stats->getTotalAlerts());
 
 #ifdef NTOPNG_PRO

@@ -311,6 +311,12 @@
 #define BATADV15_UNICAST_MAX     0x7f
 
 // ICMP
+#ifndef ICMP_ECHO
+#define ICMP_ECHO 8
+#endif
+#ifndef ICMP_ECHO_REPLY
+#define ICMP_ECHO_REPLY 0
+#endif
 #ifndef ICMP_TIMESTAMP
 #define ICMP_TIMESTAMP 13
 #endif
@@ -339,12 +345,6 @@
 #endif
 #ifndef ICMP6_WRUREPLY
 #define ICMP6_WRUREPLY 140
-#endif
-#ifndef ICMP6_DEST_UNREACH
-#define ICMP6_DEST_UNREACH 1
-#endif
-#ifndef ICMP6_PORT_UNREACH
-#define ICMP6_PORT_UNREACH 4
 #endif
 
 #ifndef TH_FIN

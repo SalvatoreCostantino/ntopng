@@ -102,10 +102,20 @@ Flow::Flow(NetworkInterface *_iface,
       if(cli_host) cli_host->incNumUnreachableFlows(true  /* as server */);
       if(srv_host) srv_host->incNumUnreachableFlows(false /* as client */);
     }
-    else if(icmp_info->isHostUnreachable(protocol)){
+    else if(icmp_info->isHostUnreachable()){
 
       if(cli_host) cli_host->incNumHostUnreachableFlows(true  /* as server */);
       if(srv_host) srv_host->incNumHostUnreachableFlows(false /* as client */);
+    }
+    else if(icmp_info->isEchoReply()){
+      
+      if(cli_host) cli_host->incNumEchoReplyFlows(false  /* as client */);
+      if(srv_host) srv_host->incNumEchoReplyFlows(true /* as server */);
+    }
+    else if(icmp_info->isEchoRequest()){
+      
+      if(cli_host) cli_host->incNumEchoFlows(false  /* as client */);
+      if(srv_host) srv_host->incNumEchoFlows(true /* as server */);
     }
   }
 
