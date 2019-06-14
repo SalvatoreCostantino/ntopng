@@ -191,9 +191,6 @@ end
 
 -- ##############################################
 
--- NOTE: do not use this, as it is modified below for each ntopng interface
-_ifstats = interface.getStats()
-
 url = ntop.getHttpPrefix().."/lua/flows_stats.lua"
 
 if(active_page == "flows") then
@@ -225,7 +222,7 @@ end
 
 print('<li><a href="'..ntop.getHttpPrefix()..'/lua/network_stats.lua">') print(i18n("networks")) print('</a></li>')
 
-if not _ifstats.isView then
+if not ifs.isView then
    print('<li><a href="'..ntop.getHttpPrefix()..'/lua/pool_stats.lua">') print(i18n("host_pools.host_pools")) print('</a></li>')
 end
 
@@ -245,10 +242,18 @@ if(interface.hasEBPF()) then
    -- TODO: decide whether a page with the list of processes should be done or not
 end
 
-if _ifstats.has_seen_pods then
+if((ifs["type"] == "zmq") and ntop.isEnterprise()) then
+   if ifs.has_seen_ebpf_events then
+      print('<li><a href="'..ntop.getHttpPrefix()..'/lua/pro/enterprise/event_exporters.lua ">') print(i18n("event_exporters.event_exporters")) print('</a></li>')
+   else
+      print('<li><a href="'..ntop.getHttpPrefix()..'/lua/pro/enterprise/flowdevices_stats.lua">') print(i18n("flows_page.flow_exporters")) print('</a></li>')
+   end
+end
+
+if ifs.has_seen_pods then
    print('<li><a href="'..ntop.getHttpPrefix()..'/lua/pods_stats.lua">') print(i18n("containers_stats.pods")) print('</a></li>')
 end
-if _ifstats.has_seen_containers then
+if ifs.has_seen_containers then
    print('<li><a href="'..ntop.getHttpPrefix()..'/lua/containers_stats.lua">') print(i18n("containers_stats.containers")) print('</a></li>')
 end
 
@@ -310,7 +315,7 @@ local ifCustom = {}
 
 for v,k in pairs(iface_names) do
    interface.select(k)
-   _ifstats = interface.getStats()
+   local _ifstats = interface.getStats()
    ifnames[_ifstats.id] = k
    ifdescr[_ifstats.id] = _ifstats.description
    --io.write("["..k.."/"..v.."][".._ifstats.id.."] "..ifnames[_ifstats.id].."=".._ifstats.id.."\n")
@@ -390,41 +395,9 @@ print [[
 ]]
 end
 
-local show_flowdevs = (ifs["type"] == "zmq")
-
-if ntop.isEnterprise() and show_flowdevs then
-   if active_page == "devices_stats" then
-     print [[ <li class="dropdown active"> ]]
-   else
-     print [[ <li class="dropdown"> ]]
-   end
-
-   print [[
-      <a class="dropdown-toggle" data-toggle="dropdown" href="#">]] print(i18n("users.devices")) print[[ <b class="caret"></b>
-      </a>
-      <ul class="dropdown-menu">
-   ]]
-
-   if(info["version.enterprise_edition"] == true) and show_flowdevs then
-      if _ifstats.has_seen_ebpf_events then
-         print('<li><a href="'..ntop.getHttpPrefix()..'/lua/pro/enterprise/event_exporters.lua ">') print(i18n("event_exporters.event_exporters")) print('</a></li>')
-      else
-         if table.len(interface.getSFlowDevices() or {}) > 0 then
-            print('<li><a href="'..ntop.getHttpPrefix()..'/lua/pro/enterprise/flowdevices_stats.lua?sflow_filter=All">') print(i18n("flows_page.sflow_devices")) print('</a></li>')
-         end
-
-         print('<li class="divider"></li>')
-         print('<li class="dropdown-header">') print(i18n("flows")) print('</li>')
-
-         print('<li><a href="'..ntop.getHttpPrefix()..'/lua/pro/enterprise/flowdevices_stats.lua">') print(i18n("flows_page.flow_exporters")) print('</a></li>')
-      end
-   end
-
-   print("</ul> </li>")
-
-end
-
 if isAllowedSystemInterface() then
+   local system_scripts = require("system_scripts_utils")
+
    if active_page == "system_stats" then
      print [[ <li class="dropdown active"> ]]
    else
@@ -438,10 +411,9 @@ if isAllowedSystemInterface() then
        <ul class="dropdown-menu">]]
 
    print[[<li><a href="]] print(ntop.getHttpPrefix()) print[[/lua/system_stats.lua">]] print(i18n("system_status")) print[[</li>]]
-   print[[<li><a href="]] print(ntop.getHttpPrefix()) print[[/lua/rtt_stats.lua">]] print(i18n("graphs.rtt")) print[[</li>]]
 
-   if(ts_utils.getDriverName() == "influxdb") then
-      print('<li><a href="'..ntop.getHttpPrefix()..'/lua/influxdb_stats.lua">') print("InfluxDB") print('</a></li>')
+   for _, entry in ipairs(system_scripts.getSystemMenuEntries()) do
+      print[[<li><a href="]] print(entry.url) print[[">]] print(entry.label) print[[</li>]]
    end
 
    if ntop.isEnterprise() then
