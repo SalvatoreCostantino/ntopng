@@ -41,11 +41,35 @@ enum {
 #endif
 #endif
 
+typedef struct {
+  const char *string;
+  u_int64_t uint_num;
+  double double_num;
+} ParsedValue;
+
 typedef enum {
   no_host_mask = 0,
   mask_local_hosts = 1,
   mask_remote_hosts = 2
 } HostMask;
+
+/* Struct used to pass parameters when walking hosts periodically to update their stats */
+class AlertCheckLuaEngine;
+typedef struct {
+  AlertCheckLuaEngine *acle;
+  struct timeval *tv;
+} update_hosts_stats_user_data_t;
+
+/* Keep in sync with alert_consts.alerts_granularities and Utils */
+typedef enum {
+  no_periodicity = -1,
+  aperiodic_script = 0,
+  minute_script,
+  five_minute_script,
+  hour_script,
+  day_script,
+  MAX_NUM_PERIODIC_SCRIPTS /* IMPORTANT: leave it as last element */
+} ScriptPeriodicity;
 
 typedef enum {
   threshold_hourly = 0,
@@ -91,6 +115,7 @@ typedef enum {
   policy_source_schedule = 5,
 } L7PolicySource_t;
 
+/* keep in sync with alert_consts.alert_types in alert_const.lua */
 typedef enum {
   alert_none = -1,
   alert_syn_flood = 0,
@@ -99,9 +124,10 @@ typedef enum {
   alert_suspicious_activity,
   alert_interface_alerted,
   alert_flow_misbehaviour,
-  alert_flow_remote_to_remote,
+  alert_remote_to_remote,
   alert_flow_blacklisted,
   alert_flow_blocked,
+  alert_mac_ip_association_change = 17,
   alert_flow_web_mining = 21,
   alert_nfq_flushed = 22,
   alert_device_protocol_not_allowed = 24,
@@ -111,6 +137,14 @@ typedef enum {
   alert_broadcast_domain_too_large = 34,
   alert_ids = 35,
   misconfigured_dhcp_range = 36,
+  slow_periodic_activity = 40,
+  login_failed = 42,
+  alert_potentially_dangerous_protocol = 43,
+  alert_malicious_signature = 48,
+  /* 
+     IMPORTANT IMPORTANT IMPORTANT
+     If # status >= 64 then extend Utils.h and Lua bitmap functions to handle it
+  */
 } AlertType; /*
 	       NOTE:
 	       keep it in sync with alert_type_keys
@@ -129,6 +163,7 @@ typedef enum {
   This is field "entity_type" of JSON put on "ntopng.alerts.notifications_queue"
  */
 typedef enum {
+  alert_entity_none = -1,
   alert_entity_interface = 0,
   alert_entity_host,
   alert_entity_network,
@@ -140,13 +175,6 @@ typedef enum {
   alert_entity_user,
   alert_entity_influx_db,
 } AlertEntity;
-
-typedef enum {
-  alert_engine_periodic_1min = 0,
-  alert_engine_periodic_5min,
-  alert_engine_periodic_hour,
-  alert_engine_periodic_day,
-} AlertEngine;
 
 typedef enum {
   alert_on = 1,       /* An issue has been discovered and an alert has been triggered */
@@ -240,7 +268,7 @@ typedef struct {
 
 typedef struct {
   int conn_state;
-  u_int32_t rcvd_bytes;
+  u_int64_t rcvd_bytes, sent_bytes;
   u_int32_t retx_pkts, lost_pkts;
   u_int32_t in_segs, out_segs, unacked_segs;
   double rtt, rtt_var;
@@ -337,7 +365,13 @@ typedef enum {
   status_ssl_unsafe_ciphers /* 23 */,
   status_data_exfiltration /* 24 */,
   status_ssl_old_protocol_version /* 25 */,
+  status_potentially_dangerous /* 26 */,
+  status_malicious_signature /* 27 */,
   num_flow_status,
+  /* 
+     IMPORTANT IMPORTANT IMPORTANT
+     If # status >= 32 then change to 64 bit disabled_flow_status in Host.h 
+  */
 } FlowStatus;
 
 typedef enum {
@@ -358,6 +392,8 @@ typedef enum {
   column_thpt,
   column_bytes,
   column_info,
+  column_client_rtt,
+  column_server_rtt,
   /* Hosts */
   column_ip,
   column_alerts,
@@ -382,6 +418,8 @@ typedef enum {
   column_num_flows_as_server,
   column_total_num_anomalous_flows_as_client,
   column_total_num_anomalous_flows_as_server,
+  column_total_num_unreachable_flows_as_client,
+  column_total_num_unreachable_flows_as_server,
   column_total_alerts,
   column_pool_id,
   /* Macs */
@@ -437,6 +475,12 @@ typedef enum {
   flowhashing_vlan,
   flowhashing_vrfid /* VRF Id */
 } FlowHashingEnum;
+
+typedef enum {
+  hash_entry_state_active,
+  hash_entry_state_idle,
+  hash_entry_state_ready_to_be_purged
+} HashEntryState;
 
 typedef enum {
   device_proto_allowed = 0,
@@ -554,8 +598,12 @@ typedef struct {
 } DeviceProtocolBitmask;
 
 #ifndef HAVE_NEDGE
-class SNMP; /* Forward */
+class SNMP;
 #endif
+
+/* Forward class declarations for the Lua context */
+class NetworkStats;
+class Host;
 
 struct ntopngLuaContext {
   char *allowed_ifname, *user, *group;
@@ -563,10 +611,14 @@ struct ntopngLuaContext {
   struct mg_connection *conn;
   AddressTree *allowedNets;
   NetworkInterface *iface;
+#ifndef WIN32
   Ping *ping;
+#endif
 #ifndef HAVE_NEDGE
   SNMP *snmp;
 #endif
+  Host *host;
+  NetworkStats *network;
   bool localuser;
 
   /* Packet capture */
@@ -614,6 +666,7 @@ typedef enum {
 } InterfaceType;
 
 /* Update Flow::dissectHTTP when extending the type below */
+/* Keep in sync with discover.os2label */
 typedef enum {
   os_unknown = 0,
   os_linux,
@@ -670,5 +723,26 @@ typedef struct cpu_load_stats {
   uint64_t active;
   uint64_t idle;
 } cpu_load_stats;
+
+typedef struct grouped_alerts_counters {
+  std::map<AlertType, u_int32_t> types;
+  std::map<AlertLevel, u_int32_t> severities;
+} grouped_alerts_counters;
+
+/* ICMP stats required for timeseries generation */
+typedef struct ts_icmp_stats {
+  u_int16_t echo_packets_sent;
+  u_int16_t echo_packets_rcvd;
+  u_int16_t echo_reply_packets_sent;
+  u_int16_t echo_reply_packets_rcvd;
+} ts_icmp_stats;
+
+class AlertableEntity;
+typedef void (alertable_callback)(AlertableEntity *alertable, void *user_data);
+
+typedef struct bcast_domain_info {
+  bool is_ghost_network;
+  u_int64_t hits;
+} bcast_domain_info;
 
 #endif /* _NTOP_TYPEDEFS_H_ */

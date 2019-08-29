@@ -70,6 +70,13 @@ schema:addMetric("packets_ingress")
 schema:addMetric("packets_egress")
 schema:addMetric("packets_inner")
 
+-- ##############################################
+
+schema = ts_utils.newSchema("subnet:engaged_alerts", {step=60, metrics_type=ts_utils.metrics.gauge})
+schema:addTag("ifid")
+schema:addTag("subnet")
+schema:addMetric("alerts")
+
 -------------------------------------------------------
 -- INTERFACES SCHEMAS
 -------------------------------------------------------
@@ -92,6 +99,13 @@ schema = ts_utils.newSchema("iface:l4protos", {step=60})
 schema:addTag("ifid")
 schema:addTag("l4proto")
 schema:addMetric("bytes")
+
+-- ##############################################
+
+schema = ts_utils.newSchema("iface:ndpi_flows", {step=60})
+schema:addTag("ifid")
+schema:addTag("protocol")
+schema:addMetric("num_flows")
 
 -- ##############################################
 
@@ -187,6 +201,12 @@ schema:addMetric("num_nfq_pct")
 
 -- ##############################################
 
+schema = ts_utils.newSchema("iface:engaged_alerts", {step=60, metrics_type=ts_utils.metrics.gauge})
+schema:addTag("ifid")
+schema:addMetric("alerts")
+
+-- ##############################################
+
 -------------------------------------------------------
 -- CONTAINERS SCHEMAS
 -------------------------------------------------------
@@ -241,5 +261,6 @@ schema:addMetric("as_server")
 -------------------------------------------------------
 
 schema = ts_utils.newSchema("process:memory", {step=60, metrics_type=ts_utils.metrics.gauge})
+schema:addTag("ifid")
 schema:addMetric("resident_bytes")
 schema:addMetric("virtual_bytes")

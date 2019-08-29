@@ -39,8 +39,7 @@ function getRRDName(ifid, host_or_network, rrdFile)
       rrdname = os_utils.fixPath(dirs.workingdir .. "/" .. ifid .. "/host_pools/")
    elseif host_or_network ~= nil and string.starts(host_or_network, 'snmp:') then
       host_or_network = string.gsub(host_or_network, 'snmp:', '')
-      -- snmpstats are ntopng-wide so ifid is ignored
-      rrdname = os_utils.fixPath(dirs.workingdir .. "/snmpstats/")
+      rrdname = os_utils.fixPath(dirs.workingdir .. "/".. getSystemInterfaceId() .."/snmpstats/")
    elseif host_or_network ~= nil and string.starts(host_or_network, 'flow_device:') then
       host_or_network = string.gsub(host_or_network, 'flow_device:', '')
       rrdname = os_utils.fixPath(dirs.workingdir .. "/" .. ifid .. "/flow_devices/")
@@ -127,9 +126,17 @@ function getPathFromIPv6(addr)
    end
 
    local i = 1
-   for _, p in pairsByKeys(suffix:split(":") or {suffix}, rev) do
-      ipv6[8 - i + 1] = string.format('%.4x', tonumber(p, 16) or 0)
-      i = i + 1
+   if not isEmptyString(suffix) then
+     local suffix_arr = {}
+     if suffix:find(":") then
+       suffix_arr = suffix:split(":")
+     else
+       suffix_arr[0] = suffix
+     end
+     for _, p in pairsByKeys(suffix_arr, rev) do
+        ipv6[8 - i + 1] = string.format('%.4x', tonumber(p, 16) or 0)
+        i = i + 1
+     end
    end
 
    local most_significant = {ipv6[1], ipv6[2], ipv6[3], ipv6[4]}

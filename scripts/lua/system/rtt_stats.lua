@@ -31,6 +31,10 @@ local host = _GET["rtt_host"]
 local probe = system_scripts.getSystemProbe("rtt")
 local url = system_scripts.getPageScriptPath(probe) .. "?ifid=" .. getInterfaceId(ifname)
 
+if not isEmptyString(host) then
+  url = url .. "&rtt_host=" .. host
+end
+
 system_schemas = system_scripts.getAdditionalTimeseries("rtt")
 
 print [[
@@ -45,18 +49,31 @@ if host ~= nil then
 end
 print("</a></li>\n")
 
-if((page == "overview") or (page == nil)) then
-   print("<li class=\"active\"><a href=\"#\"><i class=\"fa fa-home fa-lg\"></i></a></li>\n")
-else
-   print("<li><a href=\""..url.."&page=overview\"><i class=\"fa fa-home fa-lg\"></i></a></li>")
+if isEmptyString(host) then
+  if((page == "overview") or (page == nil)) then
+     print("<li class=\"active\"><a href=\"#\"><i class=\"fa fa-home fa-lg\"></i></a></li>\n")
+  else
+     print("<li><a href=\""..url.."&page=overview\"><i class=\"fa fa-home fa-lg\"></i></a></li>")
+  end
 end
 
-if((host ~= nil) and ts_utils.exists("monitored_host:rtt", {host=host})) then
+if((host ~= nil) and ts_utils.exists("monitored_host:rtt", {ifid=getSystemInterfaceId(), host=host})) then
   if(page == "historical") then
     print("<li class=\"active\"><a href=\""..url.."&page=historical\"><i class='fa fa-area-chart fa-lg'></i></a></li>")
   else
     print("<li><a href=\""..url.."&page=historical\"><i class='fa fa-area-chart fa-lg'></i></a></li>")
   end
+end
+
+if(isAdministrator() and system_scripts.hasAlerts({entity = alertEntity("pinged_host")})) then
+   if(page == "alerts") then
+      print("\n<li class=\"active\"><a href=\"#\">")
+   else
+      print("\n<li><a href=\""..url.."&page=alerts\">")
+   end
+
+   print("<i class=\"fa fa-warning fa-lg\"></i></a>")
+   print("</li>")
 end
 
 print [[
@@ -293,7 +310,7 @@ if(page == "overview") then
     ];
 
     addInputField(host, host.html(), ' data-orig-value="' + key.html() + '"');
-    addInputField(maxrtt, maxrtt.html() || "100", 'autocomplete="off" style="width:12em;" type="number" min="0"');
+    addInputField(maxrtt, maxrtt.html() || "100", 'autocomplete="off" style="width:12em;" type="number" min="1"');
     addSelectField(iptype, iptype.html(), iptypes);
     addSelectField(probetype, probetype.html(), probetypes);
   }
@@ -384,12 +401,24 @@ if(page == "overview") then
 elseif((page == "historical") and (host ~= nil)) then
    local schema = _GET["ts_schema"] or "monitored_host:rtt"
    local selected_epoch = _GET["epoch"] or ""
-   local tags = {host=host}
+   local tags = {ifid=getSystemInterfaceId(), host=host}
    url = url.."&page=historical&rtt_host=" .. host
 
    drawGraphs(getSystemInterfaceId(), schema, tags, _GET["zoom"], url, selected_epoch, {
       timeseries = system_schemas,
    })
+elseif((page == "alerts") and isAdministrator()) then
+   local old_ifname = ifname
+   local influxdb = ts_utils.getQueryDriver()
+   interface.select(getSystemInterfaceId())
+
+   _GET["ifid"] = getSystemInterfaceId()
+   _GET["entity"] = alertEntity("pinged_host")
+   _GET["entity_val"] = _GET["rtt_host"]
+
+   drawAlerts()
+
+   interface.select(old_ifname)
 end
 
 -- #######################################################

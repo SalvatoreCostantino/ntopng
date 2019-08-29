@@ -6,6 +6,7 @@ local dirs = ntop.getDirs()
 package.path = dirs.installdir .. "/scripts/lua/modules/?.lua;" .. package.path
 if((dirs.scriptdir ~= nil) and (dirs.scriptdir ~= "")) then package.path = dirs.scriptdir .. "/lua/modules/?.lua;" .. package.path end
 require "lua_utils"
+local alerts_api = require("alerts_api")
 local recording_utils = require "recording_utils"
 local remote_assistance = require "remote_assistance"
 local telemetry_utils = require "telemetry_utils"
@@ -23,6 +24,7 @@ print[[
       "showing_x_to_y_rows": "]] print(i18n("showing_x_to_y_rows", {x="{0}", y="{1}", tot="{2}"})) print[[",
       "actions": "]] print(i18n("actions")) print[[",
       "query_was_aborted": "]] print(i18n("graphs.query_was_aborted")) print[[",
+      "exports": "]] print(i18n("system_stats.exports_label")) print[[",
    };
 
    var http_prefix = "]] print(ntop.getHttpPrefix()) print[[";
@@ -119,7 +121,7 @@ if(ntop.isPro()) then
   print('<li><a href="'..ntop.getHttpPrefix()..'/lua/pro/report.lua"><i class="fa fa-area-chart"></i> ') print(i18n("report.traffic_report")) print('</a></li>')
 end
 
-if ntop.isPro() and prefs.is_dump_flows_to_mysql_enabled and not ifs.isView then
+if ntop.isPro() and prefs.is_dump_flows_to_mysql_enabled and not ifs.isViewed then
   print('<li class="divider"></li>')
   print('<li><a href="'..ntop.getHttpPrefix()..'/lua/pro/db_explorer.lua?ifid='..ifId..'"><i class="fa fa-history"></i> ') print(i18n("db_explorer.historical_data_explorer")) print('</a></li>')
 end
@@ -133,9 +135,7 @@ end
 
 -- ##############################################
 
-if not ifs.isView and ntop.getPrefs().are_alerts_enabled == true then
-
-   local alert_cache = interface.getCachedNumAlerts() or {}
+if ntop.getPrefs().are_alerts_enabled == true then
    local active = ""
    local style = ""
    local color = ""
@@ -144,7 +144,7 @@ if not ifs.isView and ntop.getPrefs().are_alerts_enabled == true then
    -- color = 'style="color: #B94A48;"' -- bootstrap danger red
    -- end
 
-   if alert_cache["num_alerts_engaged"] == 0 and alert_cache["alerts_stored"] == false then
+   if not ifs["has_alerts"] and not alerts_api.hasEntitiesWithAlertsDisabled(ifId) then
       style = ' style="display: none;"'
    end
 
@@ -201,11 +201,13 @@ end
 
 -- ##############################################
 
-if active_page == "hosts" then
-  print [[ <li class="dropdown active"> ]]
-else
-  print [[ <li class="dropdown"> ]]
-end
+if not ifs.isViewed then -- Currently, hosts are not kept for viewed interfaces, only for their view
+   if active_page == "hosts" then
+      print [[ <li class="dropdown active"> ]]
+   else
+      print [[ <li class="dropdown"> ]]
+   end
+
 print [[
       <a class="dropdown-toggle" data-toggle="dropdown" href="#">
         ]] print(i18n("flows_page.hosts")) print[[ <b class="caret"></b>
@@ -216,17 +218,14 @@ print(ntop.getHttpPrefix())
 print [[/lua/hosts_stats.lua">]] print(i18n("flows_page.hosts")) print[[</a></li>
       ]]
 
+
 if ifs["has_macs"] == true then
    print('<li><a href="'..ntop.getHttpPrefix()..'/lua/macs_stats.lua?devices_mode=source_macs_only">') print(i18n("users.devices")) print('</a></li>')
 end
 
 print('<li><a href="'..ntop.getHttpPrefix()..'/lua/network_stats.lua">') print(i18n("networks")) print('</a></li>')
 
-if not ifs.isView then
-   print('<li><a href="'..ntop.getHttpPrefix()..'/lua/pool_stats.lua">') print(i18n("host_pools.host_pools")) print('</a></li>')
-end
-
-
+print('<li><a href="'..ntop.getHttpPrefix()..'/lua/pool_stats.lua">') print(i18n("host_pools.host_pools")) print('</a></li>')
 
 if(ntop.hasGeoIP()) then
    print('<li><a href="'..ntop.getHttpPrefix()..'/lua/as_stats.lua">') print(i18n("prefs.toggle_asn_rrds_title")) print('</a></li>')
@@ -236,18 +235,6 @@ print('<li><a href="'..ntop.getHttpPrefix()..'/lua/os_stats.lua">') print(i18n("
 
 if(interface.hasVLANs()) then
    print('<li><a href="'..ntop.getHttpPrefix()..'/lua/vlan_stats.lua">') print(i18n("vlan_stats.vlans")) print('</a></li>')
-end
-
-if(interface.hasEBPF()) then
-   -- TODO: decide whether a page with the list of processes should be done or not
-end
-
-if((ifs["type"] == "zmq") and ntop.isEnterprise()) then
-   if ifs.has_seen_ebpf_events then
-      print('<li><a href="'..ntop.getHttpPrefix()..'/lua/pro/enterprise/event_exporters.lua ">') print(i18n("event_exporters.event_exporters")) print('</a></li>')
-   else
-      print('<li><a href="'..ntop.getHttpPrefix()..'/lua/pro/enterprise/flowdevices_stats.lua">') print(i18n("flows_page.flow_exporters")) print('</a></li>')
-   end
 end
 
 if ifs.has_seen_pods then
@@ -261,7 +248,10 @@ print('<li class="divider"></li>')
 print('<li class="dropdown-header">') print(i18n("local_traffic")) print('</li>')
 
 print('<li><a href="'..ntop.getHttpPrefix()..'/lua/http_servers_stats.lua">') print(i18n("http_servers_stats.http_servers")) print('</a></li>')
-print('<li><a href="'..ntop.getHttpPrefix()..'/lua/top_hosts.lua"><i class="fa fa-trophy"></i> ') print(i18n("processes_stats.top_hosts")) print('</a></li>')
+
+if not is_pcap_dump then
+   print('<li><a href="'..ntop.getHttpPrefix()..'/lua/top_hosts.lua"><i class="fa fa-trophy"></i> ') print(i18n("processes_stats.top_hosts")) print('</a></li>')
+end
 
 print('<li class="divider"></li>')
 
@@ -282,13 +272,40 @@ end
 print [[
       <li><a href="]]
 print(ntop.getHttpPrefix())
-print [[/lua/hosts_matrix.lua"><i class="fa fa-th-large"></i> ]] print(i18n("local_flow_matrix.local_flow_matrix")) print[[</a></li>
+print [[/lua/bubble.lua"><i class="fa fa-circle-o"></i> Host Explorer</a></li>
    ]]
 
 print("</ul> </li>")
 
--- Devices
+end -- closes not ifs.isViewed
+
+-- Exporters
 info = ntop.getInfo()
+
+if((ifs["type"] == "zmq") and ntop.isEnterprise()) then
+  if active_page == "exporters" then
+    print [[ <li class="dropdown active"> ]]
+  else
+    print [[ <li class="dropdown"> ]]
+  end
+
+   print [[
+      <a class="dropdown-toggle" data-toggle="dropdown" href="#">]] print(i18n("flow_devices.exporters")) print[[ <b class="caret"></b>
+      </a>
+      <ul class="dropdown-menu">
+]]
+
+  if ifs.has_seen_ebpf_events then
+      print('<li><a href="'..ntop.getHttpPrefix()..'/lua/pro/enterprise/event_exporters.lua ">') print(i18n("event_exporters.event_exporters")) print('</a></li>')
+   else
+      print('<li><a href="'..ntop.getHttpPrefix()..'/lua/pro/enterprise/flowdevices_stats.lua">') print(i18n("flows_page.flow_exporters")) print('</a></li>')
+   end
+
+   print [[
+
+      </ul>
+    </li>]]
+end
 
 -- Interfaces
 if(num_ifaces > 0) then
@@ -393,7 +410,7 @@ print [[
       </ul>
     </li>
 ]]
-end
+end -- num_ifaces > 0
 
 if isAllowedSystemInterface() then
    local system_scripts = require("system_scripts_utils")
@@ -410,10 +427,10 @@ if isAllowedSystemInterface() then
          </a>
        <ul class="dropdown-menu">]]
 
-   print[[<li><a href="]] print(ntop.getHttpPrefix()) print[[/lua/system_stats.lua">]] print(i18n("system_status")) print[[</li>]]
+   print[[<li><a href="]] print(ntop.getHttpPrefix()) print[[/lua/system_stats.lua">]] print(i18n("system_status")) print[[</a></li>]]
 
    for _, entry in ipairs(system_scripts.getSystemMenuEntries()) do
-      print[[<li><a href="]] print(entry.url) print[[">]] print(entry.label) print[[</li>]]
+      print[[<li><a href="]] print(entry.url) print[[">]] print(entry.label) print[[</a></li>]]
    end
 
    if ntop.isEnterprise() then
@@ -567,6 +584,16 @@ if(ifs.has_seen_dhcp_addresses and is_admin and (not is_pcap_dump) and is_packet
          print('</a></div>')
       end
    end
+end
+
+if ts_utils.getDriverName() == "influxdb" then
+  local msg = ntop.getCache("ntopng.cache.influxdb.last_error")
+
+  if not isEmptyString(msg) then
+    print('<br><div id="influxdb-error-msg" class="alert alert-danger" role="alert"><i class="fa fa-warning fa-lg" id="alerts-menu-triangle"></i> ')
+    print(msg)
+    print('</div>')
+  end
 end
 
 -- Hidden by default, will be shown by the footer if necessary

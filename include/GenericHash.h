@@ -42,7 +42,7 @@ class GenericHash {
   u_int32_t num_hashes; /**< Number of hash.*/
   u_int32_t current_size; /**< Current size of hash (including idle or ready-to-purge elements).*/
   u_int32_t max_hash_size; /**< Max size of hash.*/
-  Mutex **locks, purgeLock;
+  Mutex **locks;
   NetworkInterface *iface; /**< Pointer of network interface for this generic hash.*/
   u_int last_purged_hash; /**< Index of last purged hash.*/
   u_int purge_step;
@@ -77,21 +77,12 @@ class GenericHash {
    * @details If current_size < max_hash_size, this method calculate a new hash key for the new entry, add it and update the current_size value.
    *
    * @param h Pointer of new entry to add.
+   * @param h whether the bucket should be locked before addin the entry to the linked list.
    * @return True if the entry has been added successfully,
    *         False otherwise.
    *
    */
-  bool add(GenericHashEntry *h);
-  /**
-   * @brief Remove entry from generic hash
-   * @details Check if the entry is present inside the hash, remove it and update the hash.
-   *
-   * @param h Pointer of entry to remove.
-   * @return True if the entry has been remove successfully,
-   *         False otherwise.
-   * @warning GenericHashEntry* memory is NOT freed.
-   */
-  bool remove(GenericHashEntry *h);
+  bool add(GenericHashEntry *h, bool do_lock);
   /**
    * @brief generic walker for the hash.
    * @details This method uses the walker function to compare each elements of the hash with the user data.
@@ -100,16 +91,20 @@ class GenericHash {
    * @param walk_all true = walk all hash, false, walk only one (non NULL) slot
    * @param walker A pointer to the comparison function.
    * @param user_data Value to be compared with the values of hash.
+   * @param walk_idle Allows idle entries to be walked. WARNING: Should never be used unless in ViewInterface::flowPollLoop
    */
   bool walk(u_int32_t *begin_slot, bool walk_all,
-	    bool (*walker)(GenericHashEntry *h, void *user_data, bool *entryMatched), void *user_data);
+	    bool (*walker)(GenericHashEntry *h, void *user_data, bool *entryMatched), void *user_data, bool walk_idle = false);
 
   /**
    * @brief Purge idle hash entries.
    *
+   * @param force_idle Forcefully marks all hash_entry_state_active entries to
+   * hash_entry_state_idle
+   *
    * @return Numbers of purged entry, 0 otherwise.
    */
-  u_int purgeIdle();
+  u_int purgeIdle(bool force_idle);
 
   /**
    * @brief Purge all hash entries.
@@ -139,9 +134,6 @@ class GenericHash {
    */
   inline bool hasEmptyRoom() { return((current_size < max_hash_size) ? true : false); };
   inline u_int32_t getCurrentSize() { return current_size;}
-
-  inline void disablePurge() { /* purgeLock.lock(__FILE__, __LINE__);   */ }
-  inline void enablePurge()  { /* purgeLock.unlock(__FILE__, __LINE__); */ }
 };
 
 #endif /* _GENERIC_HASH_H_ */

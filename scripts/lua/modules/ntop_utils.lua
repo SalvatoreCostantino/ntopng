@@ -143,6 +143,23 @@ end
 
 -- ##############################################
 
+function pairsByField(t, field, f)
+  local a = {}
+  for n in pairs(t) do table.insert(a, n) end
+
+  table.sort(a, function(x, y) return f(t[x][field], t[y][field]) end)
+  local i = 0      -- iterator variable
+  local iter = function ()   -- iterator function
+    i = i + 1
+    if a[i] == nil then return nil
+    else return a[i], t[a[i]]
+    end
+  end
+  return iter
+end
+
+-- ##############################################
+
 function asc(a,b)
   return (a < b)
 end
@@ -171,6 +188,10 @@ end
 
 function tolongint(what)
    if(what == nil) then
+      return(0)
+   elseif(what ~= what) then
+      traceError(TRACE_ERROR, TRACE_CONSOLE, "Trying to convert NaN to integer")
+      traceError(TRACE_ERROR, TRACE_CONSOLE, debug.traceback())
       return(0)
    else
       return(string.format("%u", math.floor(what)))
@@ -243,4 +264,11 @@ function getSystemInterfaceId()
    -- NOTE: keep in sync with SYSTEM_INTERFACE_ID in ntop_defines.h
    -- This must be a string as it is passed in interface.select
    return "-1"
+end
+
+-- ##############################################
+
+function getSystemInterfaceName()
+   -- NOTE: keep in sync with SYSTEM_INTERFACE_NAME in ntop_defines.h
+   return "__system__"
 end

@@ -67,13 +67,13 @@ local function delete_host_redis_keys(interface_id, host_info)
 
    if not isMacAddress(host_info["host"]) then
       -- this is an IP address, see HOST_SERIALIZED_KEY (ntop_defines.h)
-      serialized_k = string.format("ntopng.serialized_hosts.ifid_%u__%s@%d", interface_id, host_info["host"], host_info["vlan"] or "0")
+      serialized_k = string.format("ntopng.serialized_hosts.ifid_%d__%s@%d", interface_id, host_info["host"], host_info["vlan"] or "0")
       dns_k = string.format("ntopng.dns.cache.%s", host_info["host"]) -- neither vlan nor ifid implemented for the dns cache
       drop_k = "ntopng.prefs.drop_host_traffic"
       label_k = "ntopng.host_labels"
    else
       -- is a mac address, see MAC_SERIALIED_KEY (see ntop_defines.h)
-      serialized_k = string.format("ntopng.serialized_macs.ifid_%u__%s", interface_id, host_info["host"])
+      serialized_k = string.format("ntopng.serialized_macs.ifid_%d__%s", interface_id, host_info["host"])
       devnames_k = string.format("ntopng.cache.devnames.%s", host_info["host"])
       devtypes_k = string.format("ntopng.prefs.device_types.%s", host_info["host"])
       dhcp_k = getDhcpNamesKey(interface_id)
@@ -103,10 +103,10 @@ local function delete_host_mysql_flows(interface_id, host_info)
       local q
 
       if isIPv4(addr) then
-	 q = string.format("DELETE FROM %s WHERE (IP_SRC_ADDR = INET_ATON('%s') OR IP_DST_ADDR = INET_ATON('%s')) AND VLAN_ID = %u and INTERFACE_ID = %u",
+	 q = string.format("DELETE FROM %s WHERE (IP_SRC_ADDR = INET_ATON('%s') OR IP_DST_ADDR = INET_ATON('%s')) AND VLAN_ID = %u and INTERFACE_ID = %d",
 			   "flowsv4", addr, addr, vlan, interface_id)
       elseif isIPv6(addr) then
-	 q = string.format("DELETE FROM %s WHERE (IP_SRC_ADDR = '%s' OR IP_DST_ADDR = '%s') AND VLAN_ID = %u AND INTERFACE_ID = %u",
+	 q = string.format("DELETE FROM %s WHERE (IP_SRC_ADDR = '%s' OR IP_DST_ADDR = '%s') AND VLAN_ID = %u AND INTERFACE_ID = %d",
 			   "flowsv6", addr, addr, vlan, interface_id)
       end
 
@@ -193,6 +193,36 @@ end
 
 -- ################################################################
 
+local function delete_keys_patterns(keys_patterns, preserve_prefs)
+  for _, pattern in pairs(keys_patterns) do
+    local matching_keys = ntop.getKeysCache(pattern)
+
+    for matching_key, _ in pairs(matching_keys or {}) do
+	    if((not preserve_prefs) or
+		  ((not starts(matching_key, "ntopng.prefs.")) and
+		   (not starts(matching_key, "ntopng.user.")))) then
+	       if not dry_run then
+		  ntop.delCache(matching_key)
+	       end
+	    end
+	 end
+  end
+end
+
+-- ################################################################
+
+local function delete_system_interface_redis(preserve_prefs)
+  local keys_patterns = {
+    "ntopng.prefs.snmp_devices*",
+    "ntopng.prefs.system_rtt_hosts*",
+    "cachedsnmp*",
+  }
+
+  delete_keys_patterns(keys_patterns, preserve_prefs)
+end
+
+-- ################################################################
+
 local function delete_interfaces_redis_keys(interfaces_list, preserve_prefs)
    local pref_prefix = "ntopng.prefs"
    local status = "OK"
@@ -205,27 +235,27 @@ local function delete_interfaces_redis_keys(interfaces_list, preserve_prefs)
 	 -- examples:
 	 --  ntopng.prefs.0.host_pools.pool_ids
 	 --  ntopng.prefs.0.host_pools.details.0
-	 string.format("%s.%u.*", pref_prefix, if_id),
+	 string.format("%s.%d.*", pref_prefix, if_id),
 	 -- examples:
 	 --  ntopng.profiles_counters.ifid_0
 	 --  ntopng.serialized_host_pools.ifid_0
-	 string.format("ntopng.*ifid_%u", if_id),
+	 string.format("ntopng.*ifid_%d", if_id),
 	 -- examples:
 	 --  ntopng.serialized_macs.ifid_0__52:54:00:3B:CB:B3
 	 --  ntopng.serialized_hosts.ifid_0__192.168.2.131@0
-	 string.format("*.ifid_%u_*", if_id),
+	 string.format("*.ifid_%d_*", if_id),
 	 -- examples:
 	 --  ntopng.cache.engaged_alerts_cache_ifid_4_5mins
 	 --  ntopng.cache.engaged_alerts_cache_ifid_4_min
-	 string.format("ntopng.*_ifid_%u_*", if_id),
+	 string.format("ntopng.*_ifid_%d_*", if_id),
 	 -- examples:
 	 -- ntopng.prefs.ifid_0.custom_nDPI_proto_categories
 	 -- ntopng.prefs.ifid_0.is_traffic_mirrored
-	 string.format("*.ifid_%u.*", if_id),
+	 string.format("*.ifid_%d.*", if_id),
 	 -- examples:
 	 --  ntopng.prefs.iface_2.packet_drops_alert
 	 --  ntopng.prefs.iface_3.scaling_factor
-	 string.format("%s.iface_%u.*", pref_prefix, if_id),
+	 string.format("%s.iface_%d.*", pref_prefix, if_id),
 	 -- examples:
 	 --  ntopng.prefs.enp1s0f0.xxx
 	 string.format("%s.%s.*", pref_prefix, if_name),
@@ -234,18 +264,10 @@ local function delete_interfaces_redis_keys(interfaces_list, preserve_prefs)
 	 string.format("%s.%s_*", pref_prefix, if_name),
       }
 
-      for _, pattern in pairs(keys_patterns) do
-	 local matching_keys = ntop.getKeysCache(pattern)
+      delete_keys_patterns(keys_patterns, preserve_prefs)
 
-	 for matching_key, _ in pairs(matching_keys or {}) do
-	    if((not preserve_prefs) or
-		  ((not starts(matching_key, "ntopng.prefs.")) and
-		   (not starts(matching_key, "ntopng.user.")))) then
-	       if not dry_run then
-		  ntop.delCache(matching_key)
-	       end
-	    end
-	 end
+      if(if_id == getSystemInterfaceId()) then
+        delete_system_interface_redis(preserve_prefs)
       end
    end
 
@@ -259,7 +281,7 @@ local function delete_interfaces_data(interfaces_list)
    local data_dir = ntop.getDirs()["workingdir"]
 
    for if_id, if_name in pairs(interfaces_list) do
-      local if_dir = os_utils.fixPath(string.format("%s/%u/", data_dir, if_id))
+      local if_dir = os_utils.fixPath(string.format("%s/%d/", data_dir, if_id))
 
       if not dry_run then
 	 if not ts_utils.delete("" --[[ all schemas ]], {ifid=if_id}) then
@@ -275,14 +297,6 @@ local function delete_interfaces_data(interfaces_list)
       end
    end
 
-   return {status = status}
-end
-
--- ################################################################
-
-local function delete_interfaces_influx_data(interfaces_list)
-   local status = "OK"
-   -- TODO
    return {status = status}
 end
 
@@ -433,12 +447,9 @@ end
 
 -- ################################################################
 
-function delete_data_utils.request_delete_active_interface_data(if_name)
-   local if_id = getInterfaceId(if_name)
-
-   if tonumber(if_id) >= 0 then
-      ntop.setHashCache(ACTIVE_INTERFACES_DELETE_HASH, tostring(if_id), if_name)
-   end
+function delete_data_utils.request_delete_active_interface_data(if_id)
+   local if_name = getInterfaceName(if_id)
+   ntop.setHashCache(ACTIVE_INTERFACES_DELETE_HASH, tostring(if_id), if_name)
 end
 
 -- ################################################################
@@ -502,45 +513,74 @@ end
 -- ################################################################
 
 -- NOTE: this has 1 day accuracy
-function delete_data_utils.harvestDateBasedDirTree(dir, retention, now)
+function delete_data_utils.harvestDateBasedDirTree(dir, retention, now, verbose)
+   if not ntop.exists(dir) then
+      return
+   end
+
+   if verbose then traceError(TRACE_NORMAL, TRACE_CONSOLE, string.format('Deleting files in %s older than %u days', dir, retention)) end
+
    for year in pairs(ntop.readdir(dir) or {}) do
       local year_path = os_utils.fixPath(dir .. "/" .. year)
       local num_deleted_months = 0
       local tot_months = 0
 
       for month in pairs(ntop.readdir(year_path) or {}) do
-	 local month_path = os_utils.fixPath(year_path .. "/" .. month)
-	 local num_deleted_days = 0
-	 local tot_days = 0
+         local month_path = os_utils.fixPath(year_path .. "/" .. month)
+         local num_deleted_days = 0
+         local tot_days = 0
 
-	 for day in pairs(ntop.readdir(month_path) or {}) do
-	    if(tonumber(day) ~= nil) then
-	       local tstamp = os.time({day=tonumber(day), month=tonumber(month), year=tonumber(year), hour=0, min=0, sec=0})
-	       local days_diff = (now - tstamp) / 86400
+         for day in pairs(ntop.readdir(month_path) or {}) do
+            if(tonumber(day) ~= nil) then
+               local tstamp = os.time({day=tonumber(day), month=tonumber(month), year=tonumber(year), hour=0, min=0, sec=0})
+               local days_diff = (now - tstamp) / 86400
 
-	       if(days_diff > retention) then
-		  local day_path = os_utils.fixPath(month_path .. "/" .. day)
-		  --tprint(os.date('PURGE %Y-%m-%d %H:%M:%S', tstamp))
-		  ntop.rmdir(day_path)
-		  num_deleted_days = num_deleted_days + 1
-	       end
+               if(days_diff > retention) then
+                  local day_path = os_utils.fixPath(month_path .. "/" .. day)
+                  if verbose then traceError(TRACE_NORMAL, TRACE_CONSOLE, os.date('PURGE day: %Y-%m-%d', tstamp)) end
 
-	       tot_days = tot_days + 1
-	    end
-	 end
+                  if not dry_run then
+                     ntop.rmdir(day_path)
+                  end
 
-	 if num_deleted_days == tot_days then
-	    --tprint("PURGE month: ".. month .."/" .. year)
-	    ntop.rmdir(month_path)
-	    num_deleted_months = num_deleted_months + 1
-	 end
+                  num_deleted_days = num_deleted_days + 1
+               else
+                  if verbose then traceError(TRACE_NORMAL, TRACE_CONSOLE, os.date('Keep day: %Y-%m-%d', tstamp)) end
+               end
 
-	 tot_months = tot_months + 1
+               tot_days = tot_days + 1
+            end
+         end
+
+         if num_deleted_days == tot_days then
+            if verbose then traceError(TRACE_NORMAL, TRACE_CONSOLE, "PURGE month: ".. month .."/" .. year) end
+
+            if not dry_run then
+               ntop.rmdir(month_path)
+            end
+
+            num_deleted_months = num_deleted_months + 1
+         else
+            if verbose then
+               traceError(TRACE_NORMAL, TRACE_CONSOLE,
+                  string.format("Keep month %u/%u: it still has %u days", month, year, tot_days-num_deleted_months))
+            end
+         end
+
+         tot_months = tot_months + 1
       end
 
       if num_deleted_months == tot_months then
-	 --tprint("PURGE year " .. year)
-	 ntop.rmdir(year_path)
+        if verbose then traceError(TRACE_NORMAL, TRACE_CONSOLE, "PURGE year: ".. year) end
+
+        if not dry_run then
+          ntop.rmdir(year_path)
+        end
+      else
+         if verbose then
+            traceError(TRACE_NORMAL, TRACE_CONSOLE,
+               string.format("Keep year %u: it still has %u months", year, tot_months-num_deleted_months))
+         end
       end
    end
 end

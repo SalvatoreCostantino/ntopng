@@ -105,7 +105,7 @@ class Utils {
   static u_int32_t timeval2usec(const struct timeval *tv);
   static void xor_encdec(u_char *data, int data_len, u_char *key);
   static bool isPrintableChar(u_char c);
-  static const char* flowStatus2str(FlowStatus s, AlertType *aType, AlertLevel *aLevel);
+  static const char* flowStatus2str(FlowStatus s, u_int8_t ext_severity, AlertType *aType, AlertLevel *aLevel);
   static char* formatMac(const u_int8_t * const mac, char *buf, u_int buf_len);
   static void  parseMac(u_int8_t *mac, const char *symMac);
   static u_int32_t macHash(const u_int8_t * const mac);
@@ -113,6 +113,10 @@ class Utils {
   static int numberOfSetBits(u_int32_t i);
   static void initRedis(Redis **r, const char *redis_host, const char *redis_password,
 			u_int16_t redis_port, u_int8_t _redis_db_id, bool giveup_on_failure);
+
+  /* ScriptPeriodicity */
+  static const char* periodicityToScriptName(ScriptPeriodicity p);
+  static int periodicityToSeconds(ScriptPeriodicity p);
 
   /* eBPF-related */
   static int tcpStateStr2State(const char * const state_str);
@@ -138,6 +142,7 @@ class Utils {
   static patricia_node_t* ptree_match(const patricia_tree_t *tree, int family, const void * const addr, int bits);
   static patricia_node_t* ptree_add_rule(patricia_tree_t *ptree, const char * const line);
   static int ptree_remove_rule(patricia_tree_t *ptree, char *line);
+  static bool ptree_prefix_print(prefix_t *prefix, char *buffer, size_t bufsize);
 
   static inline void update_ewma(u_int32_t sample, u_int32_t *ewma, u_int8_t alpha_percent) {
     if(alpha_percent > 100) alpha_percent = 100;
@@ -159,7 +164,7 @@ class Utils {
   static void listInterfaces(lua_State* vm); 
   static bool validInterface(char *name);
   static void containerInfoLua(lua_State *vm, const ContainerInfo * const cont);
- 
+
   /* System Host Montoring and Diagnose Functions */
   static bool getCpuLoad(cpu_load_stats *out);
   static void luaMeminfo(lua_State* vm);
@@ -174,6 +179,22 @@ class Utils {
 
   /* Pcap files utiles */
   static void init_pcap_header(struct pcap_file_header * const h, NetworkInterface * const iface);
+
+  /* Bitmap functions */
+  static inline bool bitmapIsSet(u_int64_t bitmap, u_int64_t v) {
+    return(((bitmap >> v) & 1) ? true : false);
+  }
+  static inline u_int64_t bitmapSet(u_int64_t bitmap, u_int64_t v) {
+    bitmap |= ((u_int64_t)1) << v;
+    return(bitmap);
+  }
+  static inline u_int64_t bitmapClear(u_int64_t bitmap, u_int64_t v) {
+    bitmap &= ~(((u_int64_t)1) << v);
+    return(bitmap);
+  }
+
+  static OperatingSystem getOSFromFingerprint(const char *fingerprint, const char*manuf, DeviceType devtype);
+  static DeviceType getDeviceTypeFromOsDetail(const char *os_detail);
 };
 
 #endif /* _UTILS_H_ */

@@ -25,41 +25,38 @@
 #include "ntop_includes.h"
 
 class ViewInterface : public NetworkInterface {
+ private:
+  u_int8_t num_viewed_interfaces;
+  NetworkInterface *viewed_interfaces[MAX_NUM_VIEW_INTERFACES];
+  void viewedFlowsWalker();
+
+  virtual void sumStats(TcpFlowStats *_tcpFlowStats, EthStats *_ethStats,
+			LocalTrafficStats *_localStats, nDPIStats *_ndpiStats,
+			PacketStats *_pktStats, TcpPacketStats *_tcpPacketStats) const;
+
  public:
   ViewInterface(const char *_endpoint);
 
-  virtual InterfaceType getIfType() const { return(interface_type_VIEW);           };
-  inline const char* get_type()           { return(CONST_INTERFACE_TYPE_VIEW);     };
-  virtual bool is_ndpi_enabled() const    { return(false);                         };
-  inline bool isView()                    { return(true);                          };
-  virtual bool isPacketInterface() const  { return(false);                         };
-  inline void startPacketPolling()      { ; };
-  inline void shutdown()                { ; };
-  bool set_packet_filter(char *filter)  { return(false); };
+  virtual InterfaceType getIfType() const { return interface_type_VIEW;           };
+  inline const char* get_type()           { return CONST_INTERFACE_TYPE_VIEW;     };
+  virtual bool is_ndpi_enabled()    const { return false;                         };
+  virtual bool isPacketInterface()  const { return false;                         };
+  void flowPollLoop();
+  void startPacketPolling();
+  bool set_packet_filter(char *filter)    { return false ;                        };
 
   virtual u_int64_t getNumPackets();
   virtual u_int64_t getNumBytes();
   virtual u_int     getNumPacketDrops();
   virtual u_int     getNumFlows();
-  virtual u_int     getNumL2Devices();
-  virtual u_int     getNumHosts();
-  virtual u_int     getNumLocalHosts();
-  virtual u_int     getNumMacs();
-  virtual u_int     getNumHTTPHosts();
 
   virtual u_int64_t getCheckPointNumPackets();
   virtual u_int64_t getCheckPointNumBytes();
   virtual u_int32_t getCheckPointNumPacketDrops();
 
-  virtual u_int32_t getASesHashSize();
-  virtual u_int32_t getCountriesHashSize();
-  virtual u_int32_t getVLANsHashSize();
-  virtual u_int32_t getMacsHashSize();
-  virtual u_int32_t getHostsHashSize();
+  virtual bool hasSeenVlanTaggedPackets() const;
+
   virtual u_int32_t getFlowsHashSize();
-  virtual Mac*  getMac(u_int8_t _mac[6], bool createIfNotPresent);
-  virtual Host* getHost(char *host_ip, u_int16_t vlan_id);
-  virtual Host* getHost(IpAddress * const host_ip, u_int16_t vlan_id) const;
   virtual Flow* findFlowByKey(u_int32_t key, AddressTree *allowed_hosts);
   virtual Flow* findFlowByTuple(u_int16_t vlan_id,
   				IpAddress *src_ip,  IpAddress *dst_ip,
@@ -70,9 +67,8 @@ class ViewInterface : public NetworkInterface {
 		      WalkerType wtype,		      
 		      bool (*walker)(GenericHashEntry *h,
 				     void *user_data, bool *entryMatched),
-		      void *user_data);
-  
-  virtual void lua(lua_State* vm);
+		      void *user_data,
+		      bool walk_idle = false /* Should never walk idle unless in ViewInterface::flowPollLoop */);
 };
 
 #endif /* _VIEW_INTERFACE_H_ */

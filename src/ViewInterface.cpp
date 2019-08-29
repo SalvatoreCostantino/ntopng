@@ -24,6 +24,10 @@
 /* **************************************************** */
 
 ViewInterface::ViewInterface(const char *_endpoint) : NetworkInterface(_endpoint) {
+  is_view = true; /* This is a view interface */
+
+  memset(viewed_interfaces, 0, sizeof(viewed_interfaces));
+  num_viewed_interfaces = 0;
   char *ifaces = strdup(&_endpoint[5]); /* Skip view: */
 
   if(ifaces) {
@@ -41,21 +45,26 @@ ViewInterface::ViewInterface(const char *_endpoint) : NetworkInterface(_endpoint
 	if(!strncmp(ifName, iface, MAX_INTERFACE_NAME_LEN)) {
 	  found = true;
 	  
-	  if(numSubInterfaces < MAX_NUM_VIEW_INTERFACES) {
+	  if(num_viewed_interfaces < MAX_NUM_VIEW_INTERFACES) {
 	    NetworkInterface *what = ntop->getInterfaceById(i);
 
-	    if(what)
-	      subInterfaces[numSubInterfaces++] = what;
-	    else
+	    if(!what)
 	      ntop->getTrace()->traceEvent(TRACE_ERROR, "Internal Error: NULL interface [%s][%d]", ifName, i);
+	    else if(what->isViewed())
+	      ntop->getTrace()->traceEvent(TRACE_ERROR, "Interface already belonging to a view [%s][%d]", ifName, i);
+	    else {
+	      what->setViewed();
+	      viewed_interfaces[num_viewed_interfaces++] = what;
+	    }
 	  }
+
 	  break;
 	}
       }
 
       if(!found) 
 	ntop->getTrace()->traceEvent(TRACE_WARNING, "Skipping view sub-interface %s: not found", iface);
-      else if(numSubInterfaces == MAX_NUM_VIEW_INTERFACES)
+      else if(num_viewed_interfaces == MAX_NUM_VIEW_INTERFACES)
 	break; /* Upper interface limit reached */
       
       iface = strtok_r(NULL, ",", &tmp);
@@ -71,17 +80,24 @@ bool ViewInterface::walker(u_int32_t *begin_slot,
 			   bool walk_all,
 			   WalkerType wtype,
 			   bool (*walker)(GenericHashEntry *h, void *user_data, bool *matched),
-			   void *user_data) {
+			   void *user_data,
+			   bool walk_idle) {
   bool ret = false;
+  u_int32_t flows_begin_slot = 0; /* Always from the beginning, all flows */
 
-  for(u_int8_t s = 0; s < numSubInterfaces; s++) {
-    // ntop->getTrace()->traceEvent(TRACE_WARNING, "VIEW: Iterating on subinterface %s [walker_flows: %u]",
-    // 				 subInterfaces[s]->get_name(),
-    // 				 wtype == walker_flows ? 1 : 0);
-    ret |= subInterfaces[s]->walker(begin_slot, walk_all, wtype, walker, user_data);
+  switch(wtype) {
+  case walker_flows:
+    for(u_int8_t s = 0; s < num_viewed_interfaces; s++) {
+      flows_begin_slot = 0; /* Always visit all the flows starting from slot 0 */
+      ret |= viewed_interfaces[s]->walker(&flows_begin_slot, true /* walk_all == true */, wtype, walker, user_data, walk_idle);
+    }
+    break;
+  default:
+    ret = NetworkInterface::walker(begin_slot, walk_all, wtype, walker, user_data, walk_idle);
+    break;
   }
 
-  return(ret);
+  return ret;
 }
 
 /* **************************************************** */
@@ -89,8 +105,8 @@ bool ViewInterface::walker(u_int32_t *begin_slot,
 u_int64_t ViewInterface::getNumPackets() {  
   u_int64_t tot = 0;
 
-  for(u_int8_t s = 0; s<numSubInterfaces; s++)
-    tot += subInterfaces[s]->getNumPackets();
+  for(u_int8_t s = 0; s<num_viewed_interfaces; s++)
+    tot += viewed_interfaces[s]->getNumPackets();
 
   return(tot);
 };
@@ -100,8 +116,8 @@ u_int64_t ViewInterface::getNumPackets() {
 u_int32_t ViewInterface::getNumPacketDrops() {
   u_int32_t tot = 0;
 
-  for(u_int8_t s = 0; s<numSubInterfaces; s++)
-    tot += subInterfaces[s]->getNumDroppedPackets();
+  for(u_int8_t s = 0; s<num_viewed_interfaces; s++)
+    tot += viewed_interfaces[s]->getNumDroppedPackets();
 
   return(tot);
 };
@@ -111,63 +127,8 @@ u_int32_t ViewInterface::getNumPacketDrops() {
 u_int ViewInterface::getNumFlows() {
   u_int tot = 0;
 
-  for(u_int8_t s = 0; s < numSubInterfaces; s++)
-    tot += subInterfaces[s]->getNumFlows();
-
-  return(tot);
-};
-
-/* **************************************************** */
-
-u_int ViewInterface::getNumL2Devices() {
-  u_int tot = 0;
-
-  for(u_int8_t s = 0; s < numSubInterfaces; s++)
-    tot += subInterfaces[s]->getNumL2Devices();
-
-  return(tot);
-};
-
-/* **************************************************** */
-
-u_int ViewInterface::getNumHosts() {
-  u_int tot = 0;
-
-  for(u_int8_t s = 0; s < numSubInterfaces; s++)
-    tot += subInterfaces[s]->getNumHosts();
-
-  return(tot);
-};
-
-/* **************************************************** */
-
-u_int ViewInterface::getNumLocalHosts() {
-  u_int tot = 0;
-
-  for(u_int8_t s = 0; s < numSubInterfaces; s++)
-    tot += subInterfaces[s]->getNumLocalHosts();
-
-  return(tot);
-};
-
-/* **************************************************** */
-
-u_int ViewInterface::getNumHTTPHosts() {
-  u_int tot = 0;
-
-  for(u_int8_t s = 0; s < numSubInterfaces; s++)
-    tot += subInterfaces[s]->getNumHTTPHosts();
-
-  return(tot);
-};
-
-/* **************************************************** */
-
-u_int ViewInterface::getNumMacs() {
-  u_int tot = 0;
-
-  for(u_int8_t s = 0; s < numSubInterfaces; s++)
-    tot += subInterfaces[s]->getNumMacs();
+  for(u_int8_t s = 0; s < num_viewed_interfaces; s++)
+    tot += viewed_interfaces[s]->getNumFlows();
 
   return(tot);
 };
@@ -177,8 +138,8 @@ u_int ViewInterface::getNumMacs() {
 u_int64_t ViewInterface::getNumBytes() {
   u_int64_t tot = 0;
 
-  for(u_int8_t s = 0; s<numSubInterfaces; s++)
-    tot += subInterfaces[s]->getNumBytes();
+  for(u_int8_t s = 0; s<num_viewed_interfaces; s++)
+    tot += viewed_interfaces[s]->getNumBytes();
 
   return(tot);
 }
@@ -188,8 +149,8 @@ u_int64_t ViewInterface::getNumBytes() {
 u_int64_t ViewInterface::getCheckPointNumPackets() {
   u_int64_t tot = 0;
 
-  for(u_int8_t s = 0; s < numSubInterfaces; s++)
-    tot += subInterfaces[s]->getCheckPointNumPackets();
+  for(u_int8_t s = 0; s < num_viewed_interfaces; s++)
+    tot += viewed_interfaces[s]->getCheckPointNumPackets();
 
   return(tot);
 };
@@ -199,8 +160,8 @@ u_int64_t ViewInterface::getCheckPointNumPackets() {
 u_int64_t ViewInterface::getCheckPointNumBytes() {
   u_int64_t tot = 0;
 
-  for(u_int8_t s = 0; s < numSubInterfaces; s++)
-    tot += subInterfaces[s]->getCheckPointNumBytes();
+  for(u_int8_t s = 0; s < num_viewed_interfaces; s++)
+    tot += viewed_interfaces[s]->getCheckPointNumBytes();
 
   return(tot);
 }
@@ -210,115 +171,32 @@ u_int64_t ViewInterface::getCheckPointNumBytes() {
 u_int32_t ViewInterface::getCheckPointNumPacketDrops() {
   u_int32_t tot = 0;
 
-  for(u_int8_t s = 0; s < numSubInterfaces; s++)
-    tot += subInterfaces[s]->getCheckPointNumPacketDrops();
+  for(u_int8_t s = 0; s < num_viewed_interfaces; s++)
+    tot += viewed_interfaces[s]->getCheckPointNumPacketDrops();
 
   return(tot);
 };
 
 /* **************************************************** */
 
+bool ViewInterface::hasSeenVlanTaggedPackets() const {
+  for(u_int8_t s = 0; s < num_viewed_interfaces; s++) {
+    if(viewed_interfaces[s]->hasSeenVlanTaggedPackets())
+      return true;
+  }
+
+  return false;
+}
+
+/* **************************************************** */
+
 u_int32_t ViewInterface::getFlowsHashSize() {
   u_int32_t tot = 0;
 
-  for(u_int8_t s = 0; s < numSubInterfaces; s++)
-    tot += subInterfaces[s]->getFlowsHashSize();
+  for(u_int8_t s = 0; s < num_viewed_interfaces; s++)
+    tot += viewed_interfaces[s]->getFlowsHashSize();
 
   return(tot);
-}
-
-/* **************************************************** */
-
-u_int32_t ViewInterface::getMacsHashSize() {
-  u_int32_t tot = 0;
-
-  for(u_int8_t s = 0; s < numSubInterfaces; s++)
-    tot += subInterfaces[s]->getMacsHashSize();
-
-  return(tot);
-}
-
-/* **************************************************** */
-
-u_int32_t ViewInterface::getHostsHashSize() {
-  u_int32_t tot = 0;
-
-  for(u_int8_t s = 0; s < numSubInterfaces; s++) {
-    tot += subInterfaces[s]->getHostsHashSize();
-  }
-
-  return(tot);
-}
-
-/* **************************************************** */
-
-u_int32_t ViewInterface::getASesHashSize() {
-  u_int32_t tot = 0;
-
-  for(u_int8_t s = 0; s < numSubInterfaces; s++)
-    tot += subInterfaces[s]->getASesHashSize();
-
-  return(tot);
-}
-
-/* **************************************************** */
-
-u_int32_t ViewInterface::getCountriesHashSize() {
-  u_int32_t tot = 0;
-
-  for(u_int8_t s = 0; s < numSubInterfaces; s++)
-    tot += subInterfaces[s]->getCountriesHashSize();
-
-  return(tot);
-}
-
-/* **************************************************** */
-
-u_int32_t ViewInterface::getVLANsHashSize() {
-  u_int32_t tot = 0;
-
-  for(u_int8_t s = 0; s < numSubInterfaces; s++)
-    tot += subInterfaces[s]->getVLANsHashSize();
-
-  return(tot);
-}
-
-/* **************************************************** */
-
-Host* ViewInterface::getHost(char *host_ip, u_int16_t vlan_id) {
-  Host *h = NULL;
-
-  for(u_int8_t s = 0; s < numSubInterfaces; s++) {
-    if((h = subInterfaces[s]->getHost(host_ip, vlan_id)))
-      break;
-  }
-
-  return(h);
-}
-
-/* **************************************************** */
-
-Host* ViewInterface::getHost(IpAddress * const host_ip, u_int16_t vlan_id) const {
-  Host *h = NULL;
-
-  for(u_int8_t s = 0; s < numSubInterfaces; s++) {
-    if((h = subInterfaces[s]->getHost(host_ip, vlan_id)))
-      break;
-  }
-
-  return(h);
-}
-/* **************************************************** */
-
-Mac* ViewInterface::getMac(u_int8_t _mac[6], bool createIfNotPresent) {
-  Mac *ret = NULL;
-
-  for(u_int8_t s = 0; s < numSubInterfaces; s++) {
-    if((ret = subInterfaces[s]->getMac(_mac, false)))
-      break;
-  }
-
-  return(ret);
 }
 
 /* **************************************************** */
@@ -326,12 +204,21 @@ Mac* ViewInterface::getMac(u_int8_t _mac[6], bool createIfNotPresent) {
 Flow* ViewInterface::findFlowByKey(u_int32_t key, AddressTree *allowed_hosts) {
   Flow *f = NULL;
 
-  for(u_int8_t s = 0; s < numSubInterfaces; s++) {
-    if((f = (Flow*)subInterfaces[s]->findFlowByKey(key, allowed_hosts)))
+  for(u_int8_t s = 0; s < num_viewed_interfaces; s++) {
+    if((f = (Flow*)viewed_interfaces[s]->findFlowByKey(key, allowed_hosts)))
       break;
   }
 
   return(f);
+}
+
+/* **************************************************** */
+
+void ViewInterface::sumStats(TcpFlowStats *_tcpFlowStats, EthStats *_ethStats,
+			     LocalTrafficStats *_localStats, nDPIStats *_ndpiStats,
+			     PacketStats *_pktStats, TcpPacketStats *_tcpPacketStats) const {
+  for(u_int8_t s = 0; s < num_viewed_interfaces; s++)
+    viewed_interfaces[s]->sumStats(_tcpFlowStats, _ethStats, _localStats, _ndpiStats, _pktStats, _tcpPacketStats);
 }
 
 /* **************************************************** */
@@ -343,26 +230,149 @@ Flow* ViewInterface::findFlowByTuple(u_int16_t vlan_id,
 				     AddressTree *allowed_hosts) const {
   Flow *f = NULL;
 
-  for(u_int8_t s = 0; s < numSubInterfaces; s++) {
-    if((f = (Flow*)subInterfaces[s]->findFlowByTuple(vlan_id, src_ip, dst_ip, src_port, dst_port, l4_proto, allowed_hosts)))
+  for(u_int8_t s = 0; s < num_viewed_interfaces; s++) {
+    if((f = (Flow*)viewed_interfaces[s]->findFlowByTuple(vlan_id, src_ip, dst_ip, src_port, dst_port, l4_proto, allowed_hosts)))
       break;
   }
 
   return(f);
 }
 
+/* **************************************************** */
 
-/* *************************************** */
+typedef struct {
+  struct timeval tv;
+  ViewInterface *iface;
+} viewed_flows_walker_user_data_t;
 
-void ViewInterface::lua(lua_State *vm) {
-  bool has_macs = false;
+/* **************************************************** */
 
-  NetworkInterface::lua(vm);
-  for(u_int8_t s = 0; s < numSubInterfaces; s++) {
-    if(subInterfaces[s]->hasSeenMacAddresses()) {
-      has_macs = true;
-      break;
+static bool viewed_flows_walker(GenericHashEntry *flow, void *user_data, bool *matched) {
+  viewed_flows_walker_user_data_t *viewed_flows_walker_user_data = (viewed_flows_walker_user_data_t*)user_data;
+  ViewInterface *iface = viewed_flows_walker_user_data->iface;
+  const struct timeval *tv = &viewed_flows_walker_user_data->tv;
+  Flow *f = (Flow*)flow;
+  bool acked_to_purge;
+
+  acked_to_purge = f->is_acknowledged_to_purge();
+
+  if(acked_to_purge) {
+    /* We can set the 'ready to be purged' state on behalf of the underlying viewed interface.
+       It is safe as this view is in sync with the viewed interfaces by bean of acked_to_purge */
+    f->set_hash_entry_state_ready_to_be_purged();
+  }
+
+  f->dumpFlow(tv, iface);
+
+  FlowTrafficStats partials;
+  bool first_partial; /* Whether this is the first time the view is visiting this flow */
+  const IpAddress *cli_ip = f->get_cli_ip_addr(), *srv_ip = f->get_srv_ip_addr();
+
+  if(f->get_partial_traffic_stats_view(&partials, &first_partial)) {
+    if(!cli_ip || !srv_ip)
+      ntop->getTrace()->traceEvent(TRACE_ERROR, "Unable to get flow hosts. Out of memory? Expect issues.");
+
+    if(cli_ip && srv_ip) {
+      Host *cli_host = NULL, *srv_host = NULL;
+
+      iface->findFlowHosts(f->get_vlan_id(),
+			   NULL /* no src mac yet */, (IpAddress*)cli_ip, &cli_host,
+			   NULL /* no dst mac yet */, (IpAddress*)srv_ip, &srv_host);
+
+      if(cli_host) {
+	cli_host->incStats(tv->tv_sec, f->get_protocol(), f->getStatsProtocol(), f->getCustomApp(),
+			   partials.cli2srv_packets, partials.cli2srv_bytes, partials.cli2srv_goodput_bytes,
+			   partials.srv2cli_packets, partials.srv2cli_bytes, partials.srv2cli_goodput_bytes,
+			   cli_ip->isNonEmptyUnicastAddress());
+
+	if(first_partial)
+	  cli_host->incNumFlows(f->get_last_seen(), true, srv_host), cli_host->incUses();
+
+	if(acked_to_purge)
+	  cli_host->decNumFlows(f->get_last_seen(), true, srv_host), cli_host->decUses();
+      }
+
+      if(srv_host) {
+	srv_host->incStats(tv->tv_sec, f->get_protocol(), f->getStatsProtocol(), f->getCustomApp(),
+			   partials.srv2cli_packets, partials.srv2cli_bytes, partials.srv2cli_goodput_bytes,
+			   partials.cli2srv_packets, partials.cli2srv_bytes, partials.cli2srv_goodput_bytes,
+			   srv_ip->isNonEmptyUnicastAddress());
+
+	if(first_partial)
+	  srv_host->incUses(), srv_host->incNumFlows(f->get_last_seen(), false, cli_host);
+
+	if(acked_to_purge)
+	  srv_host->decUses(), srv_host->decNumFlows(f->get_last_seen(), false, cli_host);
+      }
+
+      iface->incStats(true /* ingressPacket */,
+		      tv->tv_sec, cli_ip && cli_ip->isIPv4() ? ETHERTYPE_IP : ETHERTYPE_IPV6,
+		      f->getStatsProtocol(), f->get_protocol(),
+		      partials.srv2cli_bytes + partials.cli2srv_bytes,
+		      partials.srv2cli_packets + partials.cli2srv_packets,
+		      24 /* 8 Preamble + 4 CRC + 12 IFG */ + 14 /* Ethernet header */);
+
+      Flow::incTcpBadStats(true /* src2dst */, NULL, cli_host, srv_host,
+			   partials.tcp_stats_s2d.pktOOO, partials.tcp_stats_s2d.pktRetr,
+			   partials.tcp_stats_s2d.pktLost, partials.tcp_stats_s2d.pktKeepAlive);
+
+      Flow::incTcpBadStats(false /* dst2src */, NULL, cli_host, srv_host,
+			   partials.tcp_stats_d2s.pktOOO, partials.tcp_stats_d2s.pktRetr,
+			   partials.tcp_stats_d2s.pktLost, partials.tcp_stats_d2s.pktKeepAlive);
     }
   }
-  lua_push_bool_table_entry(vm, "has_macs", has_macs);
+
+  return false; /* Move on to the next flow, keep walking */
+}
+
+/* **************************************************** */
+
+void ViewInterface::viewedFlowsWalker() {
+  u_int32_t begin_slot;
+  viewed_flows_walker_user_data_t viewed_flows_walker_user_data;
+
+  viewed_flows_walker_user_data.tv.tv_sec = time(NULL),
+    viewed_flows_walker_user_data.tv.tv_usec = 0,
+    viewed_flows_walker_user_data.iface = this;      
+
+  begin_slot = 0; /* Always visit all flows starting from the first slot */
+  walker(&begin_slot, true /* walk all the flows */, walker_flows, viewed_flows_walker, &viewed_flows_walker_user_data, true /* visit also idle flows (required to acknowledge the purge) */);
+
+#ifdef NTOPNG_PRO
+  dumpAggregatedFlows(&viewed_flows_walker_user_data.tv);
+#endif
+}
+
+/* **************************************************** */
+
+void ViewInterface::flowPollLoop() {
+  while(!ntop->getGlobals()->isShutdownRequested()) {
+    while(idle()) sleep(1);
+
+    viewedFlowsWalker();
+
+    purgeIdle(time(NULL));
+    usleep(500000);
+  }
+}
+
+/* **************************************************** */
+
+static void* flowPollLoop(void* ptr) {
+  ViewInterface *iface = (ViewInterface*)ptr;
+
+  /* Wait until the initialization completes */
+  while(!iface->isRunning()) sleep(1);
+
+  iface->flowPollLoop();
+
+  return NULL;
+}
+
+/* **************************************************** */
+
+void ViewInterface::startPacketPolling() {
+  pthread_create(&pollLoop, NULL, ::flowPollLoop, this);
+  pollLoopCreated = true;
+  NetworkInterface::startPacketPolling();
 }

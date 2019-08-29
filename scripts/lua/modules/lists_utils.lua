@@ -8,6 +8,7 @@ local dirs = ntop.getDirs()
 local os_utils = require("os_utils")
 local categories_utils = require("categories_utils")
 local json = require("dkjson")
+local alerts_api = require("alerts_api")
 
 -- ##############################################
 
@@ -102,7 +103,13 @@ local BUILTIN_LISTS = {
     format = "hosts",
     enabled = is_nedge,
     update_interval = DEFAULT_UPDATE_INTERVAL,
-  },
+  }, ["SSLBL JA3"] = {
+    url = "https://sslbl.abuse.ch/blacklist/ja3_fingerprints.csv",
+    format = "ja3_suricata_csv",
+    category = CUSTOM_CATEGORY_MALWARE,
+    enabled = true,
+    update_interval = DEFAULT_UPDATE_INTERVAL,
+  }
 }
 
 -- ##############################################
@@ -177,6 +184,7 @@ function lists_utils.getCategoryLists()
   -- TODO add support for user defined urls
   local lists = {}
   local redis_lists = loadListsFromRedis()
+
   local default_status = {last_update=0, num_hosts=0, last_error=false, num_errors=0}
 
   for key, default_values in pairs(BUILTIN_LISTS) do
@@ -301,21 +309,29 @@ local function checkListsUpdate(timeout)
         local respcode = 0
         local last_error = i18n("delete_data.msg_err_unknown")
 
-        if res and res["RESPONSE_CODE"] ~= nil then
+        if res and res["ERROR"] then
+          last_error = res["ERROR"]
+        elseif res and res["RESPONSE_CODE"] ~= nil then
           respcode = ternary(res["RESPONSE_CODE"], res["RESPONSE_CODE"], "-")
 
           if res["IS_PARTIAL"] then
-            last_error = i18n("category_lists.connection_time_out", {err_code=respcode, duration=(os.time() - started_at)})
+            last_error = i18n("category_lists.connection_time_out", {duration=(os.time() - started_at)})
           else
-            last_error = i18n("category_lists.server_returned_error", {err_code=respcode})
+            last_error = i18n("category_lists.server_returned_error")
+          end
+
+          if(respcode > 0) then
+            last_error = last_error .. i18n("category_lists.http_code", {err_code = respcode})
           end
         end
 
         list.status.last_error = last_error
         list.status.num_errors = list.status.num_errors + 1
 
-        local msg = i18n("category_lists.error_occurred", {name=list_name, err=last_error})
-        interface.storeAlert(alertEntity("category_lists"), list_name, alertType("list_download_failed"), alertSeverity("warning"), msg)
+        alerts_api.store(
+          alerts_api.categoryListsEntity(list_name),
+          alerts_api.listDownloadFailedType(list_name, last_error)
+        )
       end
 
       now = os.time()
@@ -376,6 +392,43 @@ end
 
 -- ##############################################
 
+local function parse_hosts_line(line)
+  local words = string.split(line, "%s+")
+  local host = nil
+
+  if(words and (#words == 2)) then
+    host = words[2]
+
+    if((host == "localhost") or (host == "127.0.0.1") or (host == "::1")) then
+      host = nil
+    end
+  else
+    -- invalid host
+    host = nil
+  end
+
+  return(host)
+end
+
+-- ##############################################
+
+local function handle_ja3_suricata_csv_line(line)
+  local parts = string.split(line, ",")
+
+  if((parts ~= nil) and (#parts >= 1)) then
+    local md5_hash = parts[1]
+
+    if(string.len(md5_hash) == 32) then
+      ntop.loadMaliciousJA3Hash(string.lower(md5_hash))
+      return(true)
+    end
+  end
+
+  return(false)
+end
+
+-- ##############################################
+
 -- Loads hosts from a list file on disk
 local function loadFromListFile(list_name, list, user_custom_categories)
   local list_fname = getListCacheFile(list_name)
@@ -400,18 +453,13 @@ local function loadFromListFile(list_name, list, user_custom_categories)
       local host = trimmed
 
       if list.format == "hosts" then
-        local words = string.split(trimmed, "%s+")
-
-        if words and (#words == 2) then
-          host = words[2]
-
-          if((host == "localhost") or (host == "127.0.0.1") or (host == "::1")) then
-            host = nil
-          end
-        else
-          -- invalid host
-          host = nil
+        host = parse_hosts_line(trimmed)
+      elseif list.format == "ja3_suricata_csv" then
+        -- handled differently
+        if handle_ja3_suricata_csv_line(trimmed) then
+          num_lines = num_lines + 1
         end
+        host = nil
       end
 
       if host then
@@ -456,6 +504,7 @@ local function reloadListsNow()
 
   -- Reload into memory
   ntop.reloadCustomCategories()
+  ntop.reloadJA3Hashes()
 end
 
 -- ##############################################

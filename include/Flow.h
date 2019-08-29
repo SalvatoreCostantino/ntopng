@@ -34,6 +34,10 @@ typedef struct {
 } TCPPacketStats;
 
 typedef struct {
+  u_int64_t last, next;
+} TCPSeqNum;
+
+typedef struct {
   struct timeval lastTime;
   u_int64_t total_delta_ms;
   float min_ms, max_ms;
@@ -43,20 +47,33 @@ typedef struct {
   InterarrivalStats pktTime;
 } FlowPacketStats;
 
+typedef struct {
+  u_int32_t cli2srv_packets, srv2cli_packets;
+  u_int64_t cli2srv_bytes, srv2cli_bytes;
+  u_int64_t cli2srv_goodput_bytes, srv2cli_goodput_bytes;
+  TCPPacketStats tcp_stats_s2d, tcp_stats_d2s;
+} FlowTrafficStats;
+
 class Flow : public GenericHashEntry {
  private:
   Host *cli_host, *srv_host;
+  IpAddress *cli_ip_addr, *srv_ip_addr;
   ICMPinfo *icmp_info;
-  u_int16_t cli_port, srv_port;
-  u_int16_t vlanId;
+  u_int16_t cli_port, srv_port, vlanId;
   u_int32_t vrfId;
   u_int8_t protocol, src2dst_tcp_flags, dst2src_tcp_flags;
   struct ndpi_flow_struct *ndpiFlow;
+
+  /* When the interface isViewed(), the corresponding view needs to acknowledge the purge
+     before the flow can actually be deleted from memory. This guarantees the view has
+     seen the flow until it has become idle. */
+  bool purge_acknowledged_mark;
+
   bool detection_completed, protocol_processed,
     cli2srv_direction, twh_over, twh_ok, dissect_next_http_packet, passVerdict,
     check_tor, l7_protocol_guessed, flow_alerted, flow_dropped_counts_increased,
-    good_low_flow_detected, good_ssl_hs,
-    quota_exceeded;
+    good_low_flow_detected, good_ssl_hs, update_flow_port_stats,
+    quota_exceeded, has_malicious_signature;
   u_int16_t diff_num_http_requests;
 #ifdef NTOPNG_PRO
   bool counted_in_aggregated_flow, status_counted_in_aggregated_flow;
@@ -71,16 +88,17 @@ class Flow : public GenericHashEntry {
   CounterTrend throughputTrend, goodputTrend, thptRatioTrend;
 #endif
   ndpi_protocol ndpiDetectedProtocol;
-  static const ndpi_protocol ndpiUnknownProtocol;
   custom_app_t custom_app;
   void *cli_id, *srv_id;
-  char *json_info, *host_server_name, *bt_hash;
+  json_object *json_info;
+  char *host_server_name, *bt_hash;
   char *community_id_flow_hash;
 #ifdef HAVE_NEDGE
   u_int32_t last_conntrack_update; 
   u_int32_t marker;
 #endif
-  json_object *suricata_alert;
+  json_object *ids_alert;
+  u_int8_t ids_alert_severity;
  
   union {
     struct {
@@ -91,11 +109,17 @@ class Flow : public GenericHashEntry {
 
     struct {
       char *last_query;
+      u_int16_t last_query_type;
+      u_int16_t last_return_code;
       bool invalid_query;
     } dns;
 
     struct {
       char *client_signature, *server_signature;
+      struct {
+	/* https://engineering.salesforce.com/open-sourcing-hassh-abed3ae5044c */
+	char *client_hash, *server_hash;
+      } hassh;
     } ssh;
 
     struct {
@@ -130,23 +154,19 @@ class Flow : public GenericHashEntry {
   ParsedeBPF *cli_ebpf, *srv_ebpf;
 
   /* Stats */
-  u_int32_t cli2srv_packets, srv2cli_packets;
-  u_int64_t cli2srv_bytes, srv2cli_bytes;
-  /* https://en.wikipedia.org/wiki/Goodput */
-  u_int64_t cli2srv_goodput_bytes, srv2cli_goodput_bytes;
+  FlowTrafficStats stats;
 
   /* IP stats */
   IPPacketStats ip_stats_s2d, ip_stats_d2s;
 
   /* TCP stats */
-  TCPPacketStats tcp_stats_s2d, tcp_stats_d2s;
+  TCPSeqNum tcp_seq_s2d, tcp_seq_d2s;
   u_int16_t cli2srv_window, srv2cli_window;
 
   time_t doNotExpireBefore; /*
-			       Used for collected flows via ZMQ to make sure that they are not immediately
-			       expired if their last seen time is back in time with respect to ntopng
+			      Used for collected flows via ZMQ to make sure that they are not immediately
+			      expired if their last seen time is back in time with respect to ntopng
 			    */
-
   struct timeval synTime, synAckTime, ackTime; /* network Latency (3-way handshake) */
   struct timeval clientNwLatency; /* The RTT/2 between the client and nprobe */
   struct timeval serverNwLatency; /* The RTT/2 between nprobe and the server */
@@ -157,11 +177,13 @@ class Flow : public GenericHashEntry {
 
   /* Counter values at last host update */
   struct {
-    u_int32_t cli2srv_packets, srv2cli_packets;
-    u_int64_t cli2srv_bytes, srv2cli_bytes;
-    u_int64_t cli2srv_goodput_bytes, srv2cli_goodput_bytes;
-    u_int32_t last_dump;
+    FlowTrafficStats *partial;
+    FlowTrafficStats delta;
+    time_t first_seen, last_seen;
   } last_db_dump;
+
+  /* Lazily initialized and used by a possible view interface */
+  FlowTrafficStats *last_partial;
 
 #ifdef HAVE_NEDGE
   struct {
@@ -198,7 +220,7 @@ class Flow : public GenericHashEntry {
   bool isLowGoodput();
   void updatePacketStats(InterarrivalStats *stats, const struct timeval *when);
   void dumpPacketStats(lua_State* vm, bool cli2srv_direction);
-  bool isReadyToPurge();
+  bool isReadyToBeMarkedAsIdle();
   bool isBlacklistedFlow() const;
   inline bool isDeviceAllowedProtocol() {
       return(!cli_host || !srv_host ||
@@ -209,16 +231,16 @@ class Flow : public GenericHashEntry {
   inline bool isProto(u_int16_t p) const { return(((ndpiDetectedProtocol.master_protocol == p)
 						   || (ndpiDetectedProtocol.app_protocol == p))
 						  ? true : false); }
-#ifdef NTOPNG_PRO
   void update_pools_stats(const struct timeval *tv,
 			  u_int64_t diff_sent_packets, u_int64_t diff_sent_bytes,
 			  u_int64_t diff_rcvd_packets, u_int64_t diff_rcvd_bytes);
-#endif
   bool triggerAlerts() const;
   void dumpFlowAlert();
   void updateJA3();
+  void updateHASSH(bool as_client);
   const char* cipher_weakness2str(ndpi_cipher_weakness w);
-  
+  bool get_partial_traffic_stats(FlowTrafficStats **dst, FlowTrafficStats *delta, bool *first_partial) const;  
+
  public:
   Flow(NetworkInterface *_iface,
        u_int16_t _vlanId, u_int8_t _protocol,
@@ -228,16 +250,13 @@ class Flow : public GenericHashEntry {
        time_t _first_seen, time_t _last_seen);
   ~Flow();
 
-  virtual void set_to_purge(time_t t) {
-    GenericHashEntry::set_to_purge(t);
-    postFlowSetPurge(t);
-  };
-
   FlowStatus getFlowStatus();
   struct site_categories* getFlowCategory(bool force_categorization);
   void freeDPIMemory();
-  bool isTiny();
-  inline bool isSSL()  const { return(isProto(NDPI_PROTOCOL_SSL));  }
+  static const ndpi_protocol ndpiUnknownProtocol;
+  bool isTiny() const;
+  bool isLongLived() const;
+  inline bool isSSL()  const { return(isProto(NDPI_PROTOCOL_TLS));  }
   inline bool isSSH()  const { return(isProto(NDPI_PROTOCOL_SSH));  }
   inline bool isDNS()  const { return(isProto(NDPI_PROTOCOL_DNS));  }
   inline bool isDHCP() const { return(isProto(NDPI_PROTOCOL_DHCP)); }
@@ -251,9 +270,9 @@ class Flow : public GenericHashEntry {
   json_object* flow2json();
   json_object* flow2es(json_object *flow_object);
   json_object* flow2statusinfojson();
-  inline u_int8_t getTcpFlags()        { return(src2dst_tcp_flags | dst2src_tcp_flags);  };
-  inline u_int8_t getTcpFlagsCli2Srv() { return(src2dst_tcp_flags);                      };
-  inline u_int8_t getTcpFlagsSrv2Cli() { return(dst2src_tcp_flags);                      };
+  inline u_int8_t getTcpFlags()        const { return(src2dst_tcp_flags | dst2src_tcp_flags);  };
+  inline u_int8_t getTcpFlagsCli2Srv() const { return(src2dst_tcp_flags);                      };
+  inline u_int8_t getTcpFlagsSrv2Cli() const { return(dst2src_tcp_flags);                      };
 #ifdef HAVE_NEDGE
   bool checkPassVerdict(const struct tm *now);
   bool isPassVerdict();
@@ -271,7 +290,7 @@ class Flow : public GenericHashEntry {
   u_int32_t getNextTcpSeq(u_int8_t tcpFlags, u_int32_t tcpSeqNum, u_int32_t payloadLen) ;
   double toMs(const struct timeval *t);
   void timeval_diff(struct timeval *begin, const struct timeval *end, struct timeval *result, u_short divide_by_two);
-  char* getFlowInfo();
+  const char* getFlowInfo();
   inline char* getFlowServerInfo() {
     return (isSSL() && protos.ssl.certificate) ? protos.ssl.certificate : host_server_name;
   }
@@ -281,8 +300,11 @@ class Flow : public GenericHashEntry {
   void setTcpFlags(u_int8_t flags, bool src2dst_direction);
   void updateTcpFlags(const struct bpf_timeval *when,
 		      u_int8_t flags, bool src2dst_direction);
-  void incTcpBadStats(bool src2dst_direction,
-		      u_int32_t ooo_pkts, u_int32_t retr_pkts, u_int32_t lost_pkts, u_int32_t keep_alive_pkts);
+  static void incTcpBadStats(bool src2dst_direction,
+			     FlowTrafficStats *fts,
+			     Host *cli, Host *srv,
+			     u_int32_t ooo_pkts, u_int32_t retr_pkts,
+			     u_int32_t lost_pkts, u_int32_t keep_alive_pkts);
   
   void updateTcpSeqNum(const struct bpf_timeval *when,
 		       u_int32_t seq_num, u_int32_t ack_seq_num,
@@ -290,23 +312,22 @@ class Flow : public GenericHashEntry {
 		       u_int16_t payload_len, bool src2dst_direction);
 
   void updateSeqNum(time_t when, u_int32_t sN, u_int32_t aN);
-  inline void updateCommunityIdFlowHash() {
-    if(!community_id_flow_hash)
-      community_id_flow_hash = CommunityIdFlowHash::get_community_id_flow_hash(this);
-  }
   void processDetectedProtocol();
   void setDetectedProtocol(ndpi_protocol proto_id, bool forceDetection);
-  void setCustomApp(custom_app_t ca) {
+  inline void setCustomApp(custom_app_t ca) {
     memcpy(&custom_app, &ca, sizeof(custom_app));
   };
-  void setJSONInfo(const char *json);
+  inline custom_app_t getCustomApp() const {
+    return custom_app;
+  };
+  u_int16_t getStatsProtocol() const;
+  void setJSONInfo(json_object *json);
 #ifdef NTOPNG_PRO
   inline bool is_status_counted_in_aggregated_flow()    const { return(status_counted_in_aggregated_flow); };
   inline bool is_counted_in_aggregated_flow()           const { return(counted_in_aggregated_flow);        };
   inline void set_counted_in_aggregated_flow(bool val)        { counted_in_aggregated_flow  = val;         };
   inline void set_status_counted_in_aggregated_flow(bool val) { status_counted_in_aggregated_flow = val;   };
 #endif
-  bool isFlowPeer(char *numIP, u_int16_t vlanId);
   void incStats(bool cli2srv_direction, u_int pkt_len,
 		u_int8_t *payload, u_int payload_len, 
                 u_int8_t l4_proto, u_int8_t is_fragment,
@@ -314,47 +335,50 @@ class Flow : public GenericHashEntry {
   void addFlowStats(bool cli2srv_direction, u_int in_pkts, u_int in_bytes, u_int in_goodput_bytes,
 		    u_int out_pkts, u_int out_bytes, u_int out_goodput_bytes, 
 		    u_int in_fragments, u_int out_fragments, time_t last_seen);
-  inline bool isThreeWayHandshakeOK()             { return(twh_ok);                          };
-  inline bool isDetectionCompleted() const        { return(detection_completed);             };
-  inline struct ndpi_flow_struct* get_ndpi_flow() { return(ndpiFlow);                        };
-  inline void* get_cli_id()                       { return(cli_id);                          };
-  inline void* get_srv_id()                       { return(srv_id);                          };
-  inline u_int32_t get_cli_ipv4()                 { return(cli_host->get_ip()->get_ipv4());  };
-  inline u_int32_t get_srv_ipv4()                 { return(srv_host->get_ip()->get_ipv4());  };
-  inline struct ndpi_in6_addr* get_cli_ipv6()     { return(cli_host->get_ip()->get_ipv6());  };
-  inline struct ndpi_in6_addr* get_srv_ipv6()     { return(srv_host->get_ip()->get_ipv6());  };
-  inline u_int16_t get_cli_port() const           { return(ntohs(cli_port));                 };
-  inline u_int16_t get_srv_port() const           { return(ntohs(srv_port));                 };
-  inline u_int16_t get_vlan_id()                  { return(vlanId);                          };
-  inline u_int8_t  get_protocol() const           { return(protocol);                        };
-  inline u_int64_t get_bytes()                    { return(cli2srv_bytes+srv2cli_bytes);     };
-  inline u_int64_t get_bytes_cli2srv()            { return(cli2srv_bytes);                   };
-  inline u_int64_t get_bytes_srv2cli()            { return(srv2cli_bytes);                   };
-  inline u_int64_t get_goodput_bytes()            { return(cli2srv_goodput_bytes+srv2cli_goodput_bytes);     };
-  inline u_int64_t get_packets()                  { return(cli2srv_packets+srv2cli_packets); };
-  inline u_int64_t get_packets_cli2srv()          { return(cli2srv_packets);                 };
-  inline u_int64_t get_packets_srv2cli()          { return(srv2cli_packets);                 };
-  inline u_int64_t get_partial_bytes()            { return(get_bytes() - (last_db_dump.cli2srv_bytes+last_db_dump.srv2cli_bytes));       };
-  inline u_int64_t get_partial_bytes_cli2srv()    { return(cli2srv_bytes - last_db_dump.cli2srv_bytes);       };
-  inline u_int64_t get_partial_bytes_srv2cli()    { return(srv2cli_bytes - last_db_dump.srv2cli_bytes);       };
-  inline u_int64_t get_partial_packets_cli2srv()  { return(cli2srv_packets - last_db_dump.cli2srv_packets);   };
-  inline u_int64_t get_partial_packets_srv2cli()  { return(srv2cli_packets - last_db_dump.srv2cli_packets);   };
-  inline u_int64_t get_partial_goodput_bytes()    { return(get_goodput_bytes() - (last_db_dump.cli2srv_goodput_bytes+last_db_dump.srv2cli_goodput_bytes));       };
-  inline u_int64_t get_partial_packets()          { return(get_packets() - (last_db_dump.cli2srv_packets+last_db_dump.srv2cli_packets)); };
-  inline float get_bytes_thpt()                   { return(bytes_thpt);                      };
-  inline float get_goodput_bytes_thpt()           { return(goodput_bytes_thpt);              };
-
-  inline time_t get_partial_first_seen()          { return(last_db_dump.last_dump == 0 ? get_first_seen() : last_db_dump.last_dump); };
-  inline time_t get_partial_last_seen()           { return(get_last_seen()); };
-  inline u_int32_t get_duration()                 { return((u_int32_t)(get_last_seen()-get_first_seen())); };
-  inline char* get_protocol_name()  const         { return(Utils::l4proto2name(protocol));   };
+  inline bool isThreeWayHandshakeOK()    const { return(twh_ok);                          };
+  inline bool isDetectionCompleted()     const { return(detection_completed);             };
+  inline void* get_cli_id()              const { return(cli_id);                          };
+  inline void* get_srv_id()              const { return(srv_id);                          };
+  inline u_int32_t get_cli_ipv4()        const { return(cli_host->get_ip()->get_ipv4());  };
+  inline u_int32_t get_srv_ipv4()        const { return(srv_host->get_ip()->get_ipv4());  };
   inline ndpi_protocol get_detected_protocol() const { return(isDetectionCompleted() ? ndpiDetectedProtocol : ndpiUnknownProtocol);          };
-
-  inline Host* get_cli_host()                     { return(cli_host);                        };
-  inline Host* get_srv_host()                     { return(srv_host);                        };
-  inline char* get_json_info()			  { return(json_info);                       };
-  inline void set_long_icmp_payload()             { protos.icmp.has_long_icmp_payload = true; }
-  inline bool has_long_icmp_payload()             { return(protos.icmp.has_long_icmp_payload); }
+  inline struct ndpi_flow_struct* get_ndpi_flow()   const { return(ndpiFlow);                        };
+  inline const struct ndpi_in6_addr* get_cli_ipv6() const { return(cli_host->get_ip()->get_ipv6());  };
+  inline const struct ndpi_in6_addr* get_srv_ipv6() const { return(srv_host->get_ip()->get_ipv6());  };
+  inline u_int16_t get_cli_port()        const { return(ntohs(cli_port));                 };
+  inline u_int16_t get_srv_port()        const { return(ntohs(srv_port));                 };
+  inline u_int16_t get_vlan_id()         const { return(vlanId);                          };
+  inline u_int8_t  get_protocol()        const { return(protocol);                        };
+  inline u_int64_t get_bytes()           const { return(stats.cli2srv_bytes+stats.srv2cli_bytes);     };
+  inline u_int64_t get_bytes_cli2srv()   const { return(stats.cli2srv_bytes);                   };
+  inline u_int64_t get_bytes_srv2cli()   const { return(stats.srv2cli_bytes);                   };
+  inline u_int64_t get_goodput_bytes()   const { return(stats.cli2srv_goodput_bytes+stats.srv2cli_goodput_bytes);     };
+  inline u_int64_t get_packets()         const { return(stats.cli2srv_packets+stats.srv2cli_packets); };
+  inline u_int64_t get_packets_cli2srv() const { return(stats.cli2srv_packets);                 };
+  inline u_int64_t get_packets_srv2cli() const { return(stats.srv2cli_packets);                 };
+  inline u_int64_t get_partial_bytes()           const { return get_partial_bytes_cli2srv() + get_partial_bytes_srv2cli();     };
+  inline u_int64_t get_partial_packets()         const { return get_partial_packets_cli2srv() + get_partial_packets_srv2cli(); };
+  inline u_int64_t get_partial_goodput_bytes()   const { return last_db_dump.delta.cli2srv_goodput_bytes + last_db_dump.delta.srv2cli_goodput_bytes;       };
+  inline u_int64_t get_partial_bytes_cli2srv()   const { return last_db_dump.delta.cli2srv_bytes;   };
+  inline u_int64_t get_partial_bytes_srv2cli()   const { return last_db_dump.delta.srv2cli_bytes;   };
+  inline u_int64_t get_partial_packets_cli2srv() const { return last_db_dump.delta.cli2srv_packets; };
+  inline u_int64_t get_partial_packets_srv2cli() const { return last_db_dump.delta.srv2cli_packets; };
+  bool get_partial_traffic_stats_view(FlowTrafficStats *delta, bool *first_partial);
+  inline FlowTrafficStats * getFlowTrafficStats() { return &stats; };
+  bool update_partial_traffic_stats_db_dump();
+  inline float get_bytes_thpt()          const { return(bytes_thpt);                      };
+  inline float get_goodput_bytes_thpt()  const { return(goodput_bytes_thpt);              };
+  inline time_t get_partial_first_seen() const { return(last_db_dump.first_seen); };
+  inline time_t get_partial_last_seen()  const { return(last_db_dump.last_seen);  };
+  inline u_int32_t get_duration()        const { return((u_int32_t)(get_last_seen() - get_first_seen())); };
+  inline char* get_protocol_name()       const { return(Utils::l4proto2name(protocol));   };
+  inline Host* get_cli_host()               const { return(cli_host);    };
+  inline Host* get_srv_host()               const { return(srv_host);    };
+  inline const IpAddress* get_cli_ip_addr() const { return(cli_ip_addr); };
+  inline const IpAddress* get_srv_ip_addr() const { return(srv_ip_addr); };
+  inline json_object* get_json_info()	    const  { return(json_info);                       };
+  inline bool has_long_icmp_payload()    const  { return(protos.icmp.has_long_icmp_payload); };
+  inline void set_long_icmp_payload()           { protos.icmp.has_long_icmp_payload = true;  };
   inline ndpi_protocol_breed_t get_protocol_breed() const {
     return(ndpi_get_proto_breed(iface->get_ndpi_struct(), isDetectionCompleted() ? ndpiDetectedProtocol.app_protocol : NDPI_PROTOCOL_UNKNOWN));
   };
@@ -385,7 +409,13 @@ class Flow : public GenericHashEntry {
   u_int64_t get_current_goodput_bytes_srv2cli();
   u_int64_t get_current_packets_cli2srv();
   u_int64_t get_current_packets_srv2cli();
-  inline bool idle() { return(is_ready_to_be_purged()); }
+
+  /* Methods to handle the flow in-memory lifecycle */
+  virtual bool idle();
+  virtual void set_to_purge(time_t t);
+  bool is_acknowledged_to_purge() const;
+  void set_acknowledge_to_purge();
+
   char* print(char *buf, u_int buf_len) const;
   void update_hosts_stats(struct timeval *tv, bool dump_alert);
   u_int32_t key();
@@ -394,14 +424,13 @@ class Flow : public GenericHashEntry {
 		       u_int16_t vlan_id,
 		       u_int16_t protocol);
   void lua(lua_State* vm, AddressTree * ptree, DetailsLevel details_level, bool asListElement);
-  bool equal(IpAddress *_cli_ip, IpAddress *_srv_ip,
+  bool equal(const IpAddress *_cli_ip, const IpAddress *_srv_ip,
 	     u_int16_t _cli_port, u_int16_t _srv_port,
 	     u_int16_t _vlanId, u_int8_t _protocol,
 	     const ICMPinfo * const icmp_info,
-	     bool *src2srv_direction);
-  bool clientLessThanServer() const;
-  void sumStats(nDPIStats *stats, FlowStatusStats *status_stats);
-  bool dumpFlow(bool dump_alert);
+	     bool *src2srv_direction) const;
+  void sumStats(nDPIStats *ndpi_stats, FlowStats *stats);
+  bool dumpFlow(const struct timeval *tv, NetworkInterface *dumper);
   bool match(AddressTree *ptree);
   void dissectHTTP(bool src2dst_direction, char *payload, u_int16_t payload_len);
   void dissectSSL(char *payload, u_int16_t payload_len);
@@ -423,30 +452,33 @@ class Flow : public GenericHashEntry {
   }
   inline char* getDNSQuery()        { return(isDNS() ? protos.dns.last_query : (char*)"");  }
   inline void  setDNSQuery(char *v) { if(isDNS()) { if(protos.dns.last_query) free(protos.dns.last_query);  protos.dns.last_query = strdup(v); } }
+  inline void  setDNSQueryType(u_int16_t t) { if(isDNS()) { protos.dns.last_query_type = t; } }
+  inline void  setDNSRetCode(u_int16_t c) { if(isDNS()) { protos.dns.last_return_code = c; } }
   inline char* getHTTPURL()         { return(isHTTP() ? protos.http.last_url : (char*)"");   }
   inline void  setHTTPURL(char *v)  { if(isHTTP()) { if(protos.http.last_url) free(protos.http.last_url);  protos.http.last_url = strdup(v); } }
+  inline void  setHTTPRetCode(u_int16_t c) { if(isHTTP()) { protos.http.last_return_code = c; } }
   inline char* getHTTPContentType() { return(isHTTP() ? protos.http.last_content_type : (char*)"");   }
   inline char* getSSLCertificate()  { return(isSSL() ? protos.ssl.certificate : (char*)""); }
   bool isSSLProto();
 
-  inline void setSuricataAlert(json_object *a) { if (suricata_alert) json_object_put(suricata_alert); suricata_alert = a; };
-  inline json_object *getSuricataAlert() { return suricata_alert; };
+  inline void setIDSAlert(json_object *a, u_int8_t severity) { if (ids_alert) json_object_put(ids_alert); ids_alert = a; ids_alert_severity = severity; };
+  inline json_object *getIDSAlert() { return ids_alert; };
+  inline u_int8_t getIDSAlertSeverity() { return ids_alert_severity; };
 
 #if defined(NTOPNG_PRO) && !defined(HAVE_NEDGE)
   inline void updateProfile()     { trafficProfile = iface->getFlowProfile(this); }
   inline char* get_profile_name() { return(trafficProfile ? trafficProfile->getName() : (char*)"");}
 #endif
-  inline float getFlowRTT() { return(rttSec); }
   /* http://bradhedlund.com/2008/12/19/how-to-calculate-tcp-throughput-for-long-distance-links/ */
   inline float getCli2SrvMaxThpt() { return(rttSec ? ((float)(cli2srv_window*8)/rttSec) : 0); }
   inline float getSrv2CliMaxThpt() { return(rttSec ? ((float)(srv2cli_window*8)/rttSec) : 0); }
 
   inline u_int32_t getCli2SrvMinInterArrivalTime()  { return(cli2srvStats.pktTime.min_ms); }
   inline u_int32_t getCli2SrvMaxInterArrivalTime()  { return(cli2srvStats.pktTime.max_ms); }
-  inline u_int32_t getCli2SrvAvgInterArrivalTime()  { return((cli2srv_packets < 2) ? 0 : cli2srvStats.pktTime.total_delta_ms / (cli2srv_packets-1)); }
+  inline u_int32_t getCli2SrvAvgInterArrivalTime()  { return((stats.cli2srv_packets < 2) ? 0 : cli2srvStats.pktTime.total_delta_ms / (stats.cli2srv_packets-1)); }
   inline u_int32_t getSrv2CliMinInterArrivalTime()  { return(srv2cliStats.pktTime.min_ms); }
   inline u_int32_t getSrv2CliMaxInterArrivalTime()  { return(srv2cliStats.pktTime.max_ms); }
-  inline u_int32_t getSrv2CliAvgInterArrivalTime()  { return((srv2cli_packets < 2) ? 0 : srv2cliStats.pktTime.total_delta_ms / (srv2cli_packets-1)); }
+  inline u_int32_t getSrv2CliAvgInterArrivalTime()  { return((stats.srv2cli_packets < 2) ? 0 : srv2cliStats.pktTime.total_delta_ms / (stats.srv2cli_packets-1)); }
   bool isIdleFlow();
   inline bool isTCPEstablished() const { return (!isTCPClosed() && !isTCPReset()
 						 && ((src2dst_tcp_flags & (TH_SYN | TH_ACK)) == (TH_SYN | TH_ACK))
@@ -512,7 +544,7 @@ class Flow : public GenericHashEntry {
   inline bool isIngress2EgressDirection() { return(ingress2egress_direction); }
 #endif
   void housekeep(time_t t);
-  void postFlowSetPurge(time_t t);
+  void postFlowSetIdle(time_t t);
   void setParsedeBPFInfo(const ParsedeBPF * const ebpf, bool src2dst_direction);
   inline const ContainerInfo* getClientContainerInfo() const {
     return cli_ebpf && cli_ebpf->container_info_set ? &cli_ebpf->container_info : NULL;

@@ -151,7 +151,11 @@ void ThreadedActivity::runScript() {
 /* Run a script - both periodic and one-shot scripts are called here */
 void ThreadedActivity::runScript(char *script_path, NetworkInterface *iface) {
   LuaEngine *l;
+  u_long max_duration_ms = periodicity * 1e3;
+  u_long msec_diff;
+  struct timeval begin, end;
 
+  if(!iface) iface = ntop->getSystemInterface();
   if(strcmp(path, SHUTDOWN_SCRIPT_PATH) && isTerminating()) return;
 
 #ifdef THREADED_DEBUG
@@ -173,9 +177,25 @@ void ThreadedActivity::runScript(char *script_path, NetworkInterface *iface) {
     return;
   }
 
-  l->run_script(script_path, (iface ? iface : ntop->getSystemInterface()));
+  gettimeofday(&begin, NULL);
+  l->run_script(script_path, iface);
+  gettimeofday(&end, NULL);
 
-  if(iface == NULL)
+  msec_diff = (end.tv_sec - begin.tv_sec) * 1000 + (end.tv_usec - begin.tv_usec) / 1000;
+
+  ntop->getTrace()->traceEvent(TRACE_INFO,
+    "[PeriodicActivity] %s: completed in %u/%u ms [%s]", path, msec_diff, max_duration_ms,
+    (((max_duration_ms > 0) && (msec_diff > max_duration_ms)) ? "SLOW" : "OK"));
+
+  if((max_duration_ms > 0) &&
+      (msec_diff > 2*max_duration_ms) &&
+      /* These scripts are allowed to go beyong their max time */
+      (strcmp(path, HOUSEKEEPING_SCRIPT_PATH) != 0) &&
+      (strcmp(path, DISCOVER_SCRIPT_PATH) != 0) &&
+      (strcmp(path, TIMESERIES_SCRIPT_PATH) != 0))
+    iface->getAlertsQueue()->pushSlowPeriodicActivity(msec_diff, periodicity * 1e3, path);
+
+  if(iface == ntop->getSystemInterface())
     systemTaskRunning = false;
   else
     setInterfaceTaskRunning(iface, false);
@@ -203,7 +223,7 @@ void ThreadedActivity::uSecDiffPeriodicActivityBody() {
 #ifndef PERIODIC_DEBUG
     while(systemTaskRunning) _usleep(1000);
 #endif
-    
+
     gettimeofday(&begin, NULL);
     systemTaskRunning = true;
     runScript();

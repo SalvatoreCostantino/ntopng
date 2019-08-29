@@ -11,6 +11,8 @@ require "flow_utils"
 
 local format_utils = require "format_utils"
 local json = require "dkjson"
+local alerts_api = require "alerts_api"
+local alert_consts = require "alert_consts"
 
 sendHTTPHeader('application/json')
 
@@ -21,9 +23,25 @@ if status == "engaged" then
    engaged = true
 end
 
-if _GET["ifid"] ~= nil then
-   interface.select(_GET["ifid"])
+-- ifid is mandatory here
+interface.select(_GET["ifid"])
+
+local ifid = interface.getId()
+local entities_bitmaps = {}
+
+local function getEntityAlertDisabledBitmap(entity, entity_val)
+  if((entities_bitmaps[entity] ~= nil) and (entities_bitmaps[entity][entity_val] ~= nil)) then
+    return entities_bitmaps[entity][entity_val]
+  end
+
+  local bitmap = alerts_api.getEntityAlertsDisabled(ifid, entity, entity_val)
+  entities_bitmaps[entity] = entities_bitmaps[entity] or {}
+  entities_bitmaps[entity][entity_val] = bitmap
+
+  return(bitmap)
 end
+
+--~ function alerts_api.getEntityAlertsDisabled(ifid, entity, entity_val)
 
 if(tonumber(_GET["currentPage"]) == nil) then _GET["currentPage"] = 1 end
 if(tonumber(_GET["perPage"]) == nil) then _GET["perPage"] = getDefaultTableSize() end
@@ -48,27 +66,7 @@ if alert_options.entity_val ~= nil then
    alert_options.entity_val = string.gsub(alert_options.entity_val, "https:__", "https://")
 end
 
-local num_alerts = tonumber(_GET["totalRows"])
-if num_alerts == nil then
-   num_alerts = getNumAlerts(status, alert_options)
-end
-
-local function formatAlertRecord(alert_entity, record)
-   local flow = ""
-   local column_msg = record["alert_json"]
-
-   if alert_entity == "flow" then
-      column_msg = formatRawFlow(record, record["alert_json"])
-   elseif alert_entity == "User" then
-      column_msg = formatRawUserActivity(record, record["alert_json"])
-   end
-
-   column_msg = string.gsub(column_msg, '"', "'")
-
-   return column_msg
-end
-
-local alerts = getAlerts(status, alert_options)
+local alerts, num_alerts = getAlerts(status, alert_options, true --[[ with_counters ]])
 
 if alerts == nil then alerts = {} end
 
@@ -85,7 +83,7 @@ for _key,_value in ipairs(alerts) do
    local alert_id        = _value["rowid"]
 
    if _value["alert_entity"] ~= nil then
-      alert_entity    = alertEntityLabel(_value["alert_entity"])
+      alert_entity    = tonumber(_value["alert_entity"])
    else
       alert_entity = "flow" -- flow alerts page doesn't have an entity
    end
@@ -111,8 +109,7 @@ for _key,_value in ipairs(alerts) do
    local column_severity = alertSeverityLabel(tonumber(_value["alert_severity"]))
    local column_type     = alertTypeLabel(tonumber(_value["alert_type"]))
    local column_count    = format_utils.formatValue(tonumber(_value["alert_counter"]))
-
-   local column_msg      = formatAlertRecord(alert_entity, _value) or ""
+   local column_msg      = string.gsub(formatAlertMessage(ifid, _value), '"', "'")
    local column_chart = nil
 
    if ntop.isPro() then
@@ -141,8 +138,15 @@ for _key,_value in ipairs(alerts) do
 	 end
 	 return url
       end
-      column_id = column_id.."|"..explore()
 
+      record["column_explorer"] = explore()
+   end
+
+   if status ~= "historical-flows" then
+     local bitmap = getEntityAlertDisabledBitmap(_value["alert_entity"], _value["alert_entity_val"])
+
+     record["column_entity_formatted"] = alert_consts.formatAlertEntity(ifid, alertEntityRaw(_value["alert_entity"]), _value["alert_entity_val"])
+     record["column_alert_disabled"] = ntop.bitmapIsSet(bitmap, tonumber(_value["alert_type"]))
    end
 
    record["column_key"] = column_id
@@ -151,8 +155,9 @@ for _key,_value in ipairs(alerts) do
    record["column_severity"] = column_severity
    record["column_count"] = column_count
    record["column_type"] = column_type
+   record["column_type_id"] = tonumber(_value["alert_type"])
    record["column_msg"] = column_msg
-   record["column_entity"] = alert_entity
+   record["column_entity_id"] = alert_entity
    record["column_entity_val"] = alert_entity_val
    record["column_chart"] = column_chart
 

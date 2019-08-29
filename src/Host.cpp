@@ -23,7 +23,8 @@
 
 /* *************************************** */
 
-Host::Host(NetworkInterface *_iface, char *ipAddress, u_int16_t _vlanId) : GenericHashEntry(_iface) {
+Host::Host(NetworkInterface *_iface, char *ipAddress, u_int16_t _vlanId) : GenericHashEntry(_iface),
+									   AlertableEntity(_iface, alert_entity_host) {
   ip.set(ipAddress);
   initialize(NULL, _vlanId, true);
 }
@@ -31,12 +32,12 @@ Host::Host(NetworkInterface *_iface, char *ipAddress, u_int16_t _vlanId) : Gener
 /* *************************************** */
 
 Host::Host(NetworkInterface *_iface, Mac *_mac,
-	   u_int16_t _vlanId, IpAddress *_ip) : GenericHashEntry(_iface) {
+	   u_int16_t _vlanId, IpAddress *_ip) : GenericHashEntry(_iface), AlertableEntity(_iface, alert_entity_host) {
   ip.set(_ip);
 
 #ifdef BROADCAST_DEBUG
   char buf[32];
-  
+
   ntop->getTrace()->traceEvent(TRACE_NORMAL, "Setting %s [broadcast: %u]",
 			       ip.print(buf, sizeof(buf)), ip.isBroadcastAddress() ? 1 : 0);
 #endif
@@ -47,7 +48,8 @@ Host::Host(NetworkInterface *_iface, Mac *_mac,
 /* *************************************** */
 
 Host::~Host() {
-  if(num_uses > 0)
+  if(num_uses > 0 && (!iface->isView()
+		      || !ntop->getGlobals()->isShutdownRequested() /* View hosts are not in sync with viewed flows so during shutdown it can be normal */))
     ntop->getTrace()->traceEvent(TRACE_WARNING, "Internal error: num_uses=%u", num_uses);
 
   // ntop->getTrace()->traceEvent(TRACE_NORMAL, "Deleting %s (%s)", k, localHost ? "local": "remote");
@@ -83,7 +85,7 @@ Host::~Host() {
   /*
     Pool counters are updated both in and outside the datapath.
     So decPoolNumHosts must stay in the destructor to preserve counters
-    consistency (no thread outside the datapath will change the last pool id) 
+    consistency (no thread outside the datapath will change the last pool id)
   */
   iface->decPoolNumHosts(get_host_pool(), true /* Host is deleted inline */);
 }
@@ -94,22 +96,22 @@ void Host::updateSynAlertsCounter(time_t when, u_int8_t flags, Flow *f, bool syn
   AlertCounter *counter = syn_sent ? syn_flood_attacker_alert : syn_flood_victim_alert;
 
   if(triggerAlerts())
-    counter->incHits(when);
+    counter->inc(when, this);
 }
 
 /* *************************************** */
 
-u_int32_t Host::getNumAlerts(bool from_alertsmanager) {
-  if(!from_alertsmanager)
-    return(num_alerts_detected);
-
-  num_alerts_detected = iface->getAlertsManager()->getNumHostAlerts(this, true);
-
-  ntop->getTrace()->traceEvent(TRACE_DEBUG,
-			       "Refreshing alerts from alertsmanager [num: %i]",
-			       num_alerts_detected);
-
-  return(num_alerts_detected);
+void Host::housekeepAlerts(ScriptPeriodicity p) {
+  switch(p) {
+  case minute_script:
+    flow_flood_attacker_alert->reset_hits(),
+      flow_flood_victim_alert->reset_hits(),
+      syn_flood_attacker_alert->reset_hits(),
+      syn_flood_victim_alert->reset_hits();
+    break;
+  default:
+    break;
+  }
 }
 
 /* *************************************** */
@@ -132,10 +134,13 @@ void Host::set_host_label(char *label_name, bool ignoreIfPresent) {
 /* *************************************** */
 
 void Host::initialize(Mac *_mac, u_int16_t _vlanId, bool init_all) {
+  char buf[64];
+
   stats = NULL; /* it will be instantiated by specialized classes */
   stats_shadow = NULL;
   data_delete_requested = false, stats_reset_requested = false;
   last_stats_reset = ntop->getLastStatsReset(); /* assume fresh stats, may be changed by deserialize */
+  os = os_unknown;
 
   // readStats(); - Commented as if put here it's too early and the key is not yet set
 
@@ -147,7 +152,7 @@ void Host::initialize(Mac *_mac, u_int16_t _vlanId, bool init_all) {
   if((mac = _mac))
     mac->incUses();
 
-  if((vlan = iface->getVlan(_vlanId, true)) != NULL)
+  if((vlan = iface->getVlan(_vlanId, true, true /* Inline call */)) != NULL)
     vlan->incUses();
 
   num_resolve_attempts = 0, ssdpLocation = NULL;
@@ -167,134 +172,35 @@ void Host::initialize(Mac *_mac, u_int16_t _vlanId, bool init_all) {
   reloadHostBlacklist();
   is_dhcp_host = false;
 
-  num_alerts_detected = 0;
-  trigger_host_alerts = false;
-
   PROFILING_SUB_SECTION_ENTER(iface, "Host::initialize: new AlertCounter", 17);
-  syn_flood_attacker_alert  = new AlertCounter(ntop->getPrefs()->get_attacker_max_num_syn_per_sec(), CONST_MAX_THRESHOLD_CROSS_DURATION);
-  syn_flood_victim_alert    = new AlertCounter(ntop->getPrefs()->get_victim_max_num_syn_per_sec(), CONST_MAX_THRESHOLD_CROSS_DURATION);
-  flow_flood_attacker_alert = new AlertCounter(ntop->getPrefs()->get_attacker_max_num_flows_per_sec(), CONST_MAX_THRESHOLD_CROSS_DURATION);
-  flow_flood_victim_alert = new AlertCounter(ntop->getPrefs()->get_victim_max_num_flows_per_sec(), CONST_MAX_THRESHOLD_CROSS_DURATION);
+  syn_flood_attacker_alert  = new AlertCounter();
+  syn_flood_victim_alert    = new AlertCounter();
+  flow_flood_attacker_alert = new AlertCounter();
+  flow_flood_victim_alert = new AlertCounter();
   PROFILING_SUB_SECTION_EXIT(iface, 17);
 
-  PROFILING_SUB_SECTION_ENTER(iface, "Host::initialize: refreshHostAlertPrefs", 19);
-  refreshHostAlertPrefs();
-  PROFILING_SUB_SECTION_EXIT(iface, 19);
-
+  disabled_flow_status = 0;
+  refreshDisableFlowAlertTypes();
+  
   if(init_all) {
-    if((as = iface->getAS(&ip, true)) != NULL) {
-      as->incUses();
+    char country_name[64];
+    
+    if((as = iface->getAS(&ip, true /* Create if missing */, true /* Inline call */)) != NULL) {
       asn = as->get_asn();
       asname = as->get_asname();
     }
 
-    char country_name[64];
     get_country(country_name, sizeof(country_name));
 
-    if((country = iface->getCountry(country_name, true)) != NULL)
+    if((country = iface->getCountry(country_name, true /* Create if missing */, true /* Inline call */ )) != NULL)
       country->incUses();
   }
 
   reloadHideFromTop();
   reloadDhcpHost();
+  setEntityValue(get_hostkey(buf, sizeof(buf), true));
 
   is_in_broadcast_domain = iface->isLocalBroadcastDomainHost(this, true /* Inline call */);
-}
-
-/* *************************************** */
-
-void Host::refreshHostAlertPrefs() {
-  bool alerts_read = false;
-
-  if(!ntop->getPrefs()->are_alerts_disabled()
-      && (!ip.isEmpty())) {
-    char *key, ip_buf[48], rsp[64], rkey[128];
-
-    /* This value always contains vlan information */
-    key = get_hostkey(ip_buf, sizeof(ip_buf), true);
-
-    if(key) {
-      snprintf(rkey, sizeof(rkey), CONST_SUPPRESSED_ALERT_PREFS, getInterface()->get_id());
-      if(ntop->getRedis()->hashGet(rkey, key, rsp, sizeof(rsp)) == 0)
-	trigger_host_alerts = ((strcmp(rsp, "false") == 0) ? 0 : 1);
-      else
-	trigger_host_alerts = true;
-
-      alerts_read = true;
-
-      if(trigger_host_alerts) {
-	/* Defaults */
-	int flow_attacker_pref = ntop->getPrefs()->get_attacker_max_num_flows_per_sec();
-	int flow_victim_pref = ntop->getPrefs()->get_victim_max_num_flows_per_sec();
-	int syn_attacker_pref = ntop->getPrefs()->get_attacker_max_num_syn_per_sec();
-	int syn_victim_pref = ntop->getPrefs()->get_victim_max_num_syn_per_sec();
-
-	key = ip.print(ip_buf, sizeof(ip_buf));
-	snprintf(rkey, sizeof(rkey), CONST_HOST_ANOMALIES_THRESHOLD, key, vlan_id);
-
-	/* per-host values */
-	if((ntop->getRedis()->get(rkey, rsp, sizeof(rsp)) == 0) && (rsp[0] != '\0')) {
-	  /* Note: the order of the fields must match that of anomalies_config into alerts_utils.lua
-	     e.g., %i|%i|%i|%i*/
-	  char *a, *_t;
-
-	  a = strtok_r(rsp, "|", &_t);
-	  if(a && strncmp(a, "global", strlen("global")))
-	    flow_attacker_pref = atoi(a);
-
-	  a = strtok_r(NULL, "|", &_t);
-	  if(a && strncmp(a, "global", strlen("global")))
-	    flow_victim_pref = atoi(a);
-
-	  a = strtok_r(NULL, "|", &_t);
-	  if(a && strncmp(a, "global", strlen("global")))
-	    syn_attacker_pref = atoi(a);
-
-	  a = strtok_r(NULL, "|", &_t);
-	  if(a && strncmp(a, "global", strlen("global")))
-	    syn_victim_pref = atoi(a);
-
-#if 0
-	  printf("%s: %s\n", rkey, rsp);
-#endif
-	}
-
-	/* Counter reload logic */
-	if((u_int32_t)flow_attacker_pref != flow_flood_attacker_alert->getCurrentHits()) {
-	  flow_flood_attacker_alert->resetThresholds(flow_attacker_pref, CONST_MAX_THRESHOLD_CROSS_DURATION);
-#if 0
-	  printf("%s: attacker_max_num_flows_per_sec = %d\n", key, flow_attacker_pref);
-#endif
-	}
-
-	if((u_int32_t)flow_victim_pref != flow_flood_victim_alert->getCurrentHits()) {
-	  flow_flood_victim_alert->resetThresholds(flow_victim_pref, CONST_MAX_THRESHOLD_CROSS_DURATION);
-#if 0
-	  printf("%s: victim_max_num_flows_per_sec = %d\n", key, flow_victim_pref);
-#endif
-	}
-
-	if((u_int32_t)syn_attacker_pref != syn_flood_attacker_alert->getCurrentHits()) {
-	  syn_flood_attacker_alert->resetThresholds(syn_attacker_pref, CONST_MAX_THRESHOLD_CROSS_DURATION);
-
-#if 0
-	  printf("%s: attacker_max_num_syn_per_sec = %d\n", key, attacker_max_num_syn_per_sec);
-#endif
-	}
-
-	if((u_int32_t)syn_victim_pref != syn_flood_victim_alert->getCurrentHits()) {
-	  syn_flood_victim_alert->resetThresholds(syn_victim_pref, CONST_MAX_THRESHOLD_CROSS_DURATION);
-
-#if 0
-	  printf("%s: victim_max_num_syn_per_sec = %d\n", key, syn_victim_pref);
-#endif
-	}
-      }
-    }
-  }
-
-  if(!alerts_read)
-    trigger_host_alerts = false;
 }
 
 /* *************************************** */
@@ -370,64 +276,10 @@ void Host::set_mac(Mac *_mac) {
 
 /* *************************************** */
 
-void Host::set_mac(u_int8_t *_mac) {
-  if(iface)
-    set_mac(iface->getMac(_mac, false));
-}
-
-/* *************************************** */
-
-void Host::set_mac(char *m) {
-  u_int8_t mac_address[6];
-  u_int32_t _mac[6] = { 0 };
-
-  if((m == NULL) || (!strcmp(m, "00:00:00:00:00:00")))
-    return;
-
-  sscanf(m, "%02X:%02X:%02X:%02X:%02X:%02X",
-	 &_mac[0], &_mac[1], &_mac[2], &_mac[3], &_mac[4], &_mac[5]);
-
-  mac_address[0] = _mac[0], mac_address[1] = _mac[1],
-    mac_address[2] = _mac[2], mac_address[3] = _mac[3],
-    mac_address[4] = _mac[4], mac_address[5] = _mac[5];
-
-  set_mac(mac_address);
-}
-
-/* *************************************** */
-
-void Host::loadAlertsCounter() {
-  char buf[64], counters_key[64];
-  char rsp[16];
-  char *key = get_hostkey(buf, sizeof(buf), true /* force vlan */);
-
-  if(ntop->getPrefs()->are_alerts_disabled()) {
-    num_alerts_detected = 0;
-    return;
-  }
-
-  snprintf(counters_key, sizeof(counters_key), CONST_HOSTS_ALERT_COUNTERS, iface->get_id());
-
-  if (ntop->getRedis()->hashGet(counters_key, key, rsp, sizeof(rsp)) == 0)
-    num_alerts_detected = atoi(rsp);
-  else
-    num_alerts_detected = 0;
-
-#if 0
-  printf("%s: num_alerts_detected = %d\n", key, num_alerts_detected);
-#endif
-}
-
-/* *************************************** */
-
 bool Host::hasAnomalies() {
   time_t now = time(0);
 
-  return syn_flood_victim_alert->isAboveThreshold(now)
-    || syn_flood_attacker_alert->isAboveThreshold(now)
-    || flow_flood_victim_alert->isAboveThreshold(now)
-    || flow_flood_attacker_alert->isAboveThreshold(now)
-    || num_active_flows_as_client.is_anomalous(now)
+  return num_active_flows_as_client.is_anomalous(now)
     || num_active_flows_as_server.is_anomalous(now)
     || stats->hasAnomalies(now);
 }
@@ -442,14 +294,6 @@ void Host::luaAnomalies(lua_State* vm) {
     time_t now = time(0);
     lua_newtable(vm);
 
-    if(syn_flood_victim_alert->isAboveThreshold(now))
-      syn_flood_victim_alert->lua(vm, "syn_flood_victim");
-    if(syn_flood_attacker_alert->isAboveThreshold(now))
-      syn_flood_attacker_alert->lua(vm, "syn_flood_attacker");
-    if(flow_flood_victim_alert->isAboveThreshold(now))
-      flow_flood_victim_alert->lua(vm, "flows_flood_victim");
-    if(flow_flood_attacker_alert->isAboveThreshold(now))
-      flow_flood_attacker_alert->lua(vm, "flows_flood_attacker");
     if(num_active_flows_as_client.is_anomalous(now))
       num_active_flows_as_client.lua(vm, "num_active_flows_as_client");
     if(num_active_flows_as_server.is_anomalous(now))
@@ -537,12 +381,21 @@ void Host::lua(lua_State* vm, AddressTree *ptree,
 
   lua_push_str_table_entry(vm, "mac", Utils::formatMac(cur_mac ? cur_mac->get_mac() : NULL, buf, sizeof(buf)));
   lua_push_uint64_table_entry(vm, "devtype", isBroadcastDomainHost() && cur_mac ? cur_mac->getDeviceType() : device_unknown);
-  lua_push_uint64_table_entry(vm, "operatingSystem", cur_mac ? cur_mac->getOperatingSystem() : os_unknown);
+  lua_push_uint64_table_entry(vm, "operatingSystem", getOS());
 
   lua_push_bool_table_entry(vm, "privatehost", isPrivateHost());
   lua_push_bool_table_entry(vm, "hiddenFromTop", isHiddenFromTop());
 
-  lua_push_uint64_table_entry(vm, "num_alerts", triggerAlerts() ? getNumAlerts() : 0);
+  lua_newtable(vm);
+  lua_push_uint64_table_entry(vm, "min", getNumTriggeredAlerts(minute_script));
+  lua_push_uint64_table_entry(vm, "5mins", getNumTriggeredAlerts(five_minute_script));
+  lua_push_uint64_table_entry(vm, "hour", getNumTriggeredAlerts(hour_script));
+  lua_push_uint64_table_entry(vm, "day", getNumTriggeredAlerts(day_script));
+    lua_pushstring(vm, "num_triggered_alerts");
+  lua_insert(vm, -2);
+  lua_settable(vm, -3);
+
+  lua_push_uint64_table_entry(vm, "num_alerts", triggerAlerts() ? getNumTriggeredAlerts() : 0);
 
   lua_push_str_table_entry(vm, "name", get_visual_name(buf, sizeof(buf)));
 
@@ -556,17 +409,26 @@ void Host::lua(lua_State* vm, AddressTree *ptree,
   lua_push_uint64_table_entry(vm, "asn", asn);
   lua_push_uint64_table_entry(vm, "host_pool_id", host_pool_id);
   lua_push_str_table_entry(vm, "asname", asname ? asname : (char*)"");
-  lua_push_str_table_entry(vm, "os", get_os(buf, sizeof(buf)));
+  lua_push_int32_table_entry(vm, "os", getOS());
+  lua_push_str_table_entry(vm, "os_detail", getOSDetail(buf, sizeof(buf)));
 
   stats->lua(vm, mask_host, Utils::bool2DetailsLevel(verbose,host_details));
 
+  lua_push_uint64_table_entry(vm, "active_flows.as_client", getNumOutgoingFlows());
+  lua_push_uint64_table_entry(vm, "active_flows.as_server", getNumIncomingFlows());
   lua_push_uint64_table_entry(vm, "anomalous_flows.as_server", getTotalNumAnomalousIncomingFlows());
   lua_push_uint64_table_entry(vm, "anomalous_flows.as_client", getTotalNumAnomalousOutgoingFlows());
   lua_push_uint64_table_entry(vm, "unreachable_flows.as_server", getTotalNumUnreachableIncomingFlows());
   lua_push_uint64_table_entry(vm, "unreachable_flows.as_client", getTotalNumUnreachableOutgoingFlows());
   lua_push_uint64_table_entry(vm, "host_unreachable_flows.as_server", getTotalNumHostUnreachableIncomingFlows());
   lua_push_uint64_table_entry(vm, "host_unreachable_flows.as_client", getTotalNumHostUnreachableOutgoingFlows());
+  lua_push_uint64_table_entry(vm, "contacts.as_client", getNumActiveContactsAsClient());
+  lua_push_uint64_table_entry(vm, "contacts.as_server", getNumActiveContactsAsServer());
   lua_push_uint64_table_entry(vm, "total_alerts", stats->getTotalAlerts());
+
+  luaDNS(vm);
+  luaTCP(vm);
+  luaICMP(vm, get_ip()->isIPv4(), false);
 
 #ifdef NTOPNG_PRO
   lua_push_bool_table_entry(vm, "has_blocking_quota", has_blocking_quota);
@@ -593,6 +455,7 @@ void Host::lua(lua_State* vm, AddressTree *ptree,
   if(host_details) {
     char *continent = NULL, *country_name = NULL, *city = NULL;
     float latitude = 0, longitude = 0;
+    u_int16_t hits;
 
     /* ifid is useful for example for view interfaces to detemine
        the actual, original interface the host is associated to. */
@@ -614,6 +477,15 @@ void Host::lua(lua_State* vm, AddressTree *ptree,
     lua_push_uint64_table_entry(vm, "low_goodput_flows.as_server", low_goodput_server_flows.get());
     lua_push_uint64_table_entry(vm, "low_goodput_flows.as_client.anomaly_index", low_goodput_client_flows.getAnomalyIndex());
     lua_push_uint64_table_entry(vm, "low_goodput_flows.as_server.anomaly_index", low_goodput_server_flows.getAnomalyIndex());
+
+    if((hits = syn_flood_victim_alert->hits()))
+      lua_push_uint64_table_entry(vm, "hits.syn_flood_victim", hits);
+    if((hits = syn_flood_attacker_alert->hits()))
+      lua_push_uint64_table_entry(vm, "hits.syn_flood_attacker", hits);
+    if((hits = flow_flood_victim_alert->hits()))
+      lua_push_uint64_table_entry(vm, "hits.flow_flood_victim", hits);
+    if((hits = flow_flood_attacker_alert->hits()))
+      lua_push_uint64_table_entry(vm, "hits.flow_flood_attacker", hits);
   }
 
   lua_push_uint64_table_entry(vm, "seen.first", first_seen);
@@ -623,13 +495,10 @@ void Host::lua(lua_State* vm, AddressTree *ptree,
 
   // ntop->getTrace()->traceEvent(TRACE_NORMAL, "[pkts_thpt: %.2f] [pkts_thpt_trend: %d]", pkts_thpt,pkts_thpt_trend);
 
-  fingerprints.ssl.lua("ssl_fingerprint", vm);
-  
-  if(verbose) {
-    char *rsp = getSerializedString();
-    lua_push_str_table_entry(vm, "json", rsp);
-    free(rsp);
+  fingerprints.ja3.lua("ja3_fingerprint", vm);
+  fingerprints.hassh.lua("hassh_fingerprint", vm);
 
+  if(verbose) {
     if(hasAnomalies()) luaAnomalies(vm);
   }
 
@@ -733,7 +602,7 @@ char * Host::getMDNSTXTName(char * const buf, ssize_t buf_len) {
 
 /* ***************************************** */
 
-char * Host::get_os(char * const buf, ssize_t buf_len) {
+const char * Host::getOSDetail(char * const buf, ssize_t buf_len) {
   if(buf && buf_len)
     buf[0] = '\0';
 
@@ -743,6 +612,8 @@ char * Host::get_os(char * const buf, ssize_t buf_len) {
 /* ***************************************** */
 
 bool Host::idle() {
+  if(GenericHashEntry::idle()) return(true);
+
   if((num_uses > 0) || (!iface->is_purge_idle_interface()))
     return(false);
 
@@ -773,8 +644,7 @@ void Host::incStats(u_int32_t when, u_int8_t l4_proto, u_int ndpi_proto,
 		    custom_app_t custom_app,
 		    u_int64_t sent_packets, u_int64_t sent_bytes, u_int64_t sent_goodput_bytes,
 		    u_int64_t rcvd_packets, u_int64_t rcvd_bytes, u_int64_t rcvd_goodput_bytes,
-        bool peer_is_unicast) {
-
+		    bool peer_is_unicast) {
   if(sent_bytes || rcvd_bytes) {
     stats->incStats(when, l4_proto, ndpi_proto, custom_app,
 		    sent_packets, sent_bytes, sent_goodput_bytes, rcvd_packets,
@@ -782,23 +652,6 @@ void Host::incStats(u_int32_t when, u_int8_t l4_proto, u_int ndpi_proto,
 
     updateSeen();
   }
-}
-
-/* *************************************** */
-
-char* Host::getSerializedString() {
-  json_object *my_object = json_object_new_object();
-
-  if(my_object) {
-    char *rsp = strdup(json_object_to_json_string(my_object));
-
-    /* Free memory */
-    json_object_put(my_object);
-
-    return(rsp);
-  }
-
-  return(NULL);
 }
 
 /* *************************************** */
@@ -822,9 +675,7 @@ void Host::serialize(json_object *my_object, DetailsLevel details_level) {
     get_name(buf, sizeof(buf), false);
     if(strlen(buf)) json_object_object_add(my_object, "symbolic_name", json_object_new_string(buf));
     if(asname)      json_object_object_add(my_object, "asname",    json_object_new_string(asname ? asname : (char*)""));
-    get_os(buf, sizeof(buf));
-    if(strlen(buf)) json_object_object_add(my_object, "os",        json_object_new_string(buf));
-
+    json_object_object_add(my_object, "os_id", json_object_new_int(getOS()));
 
     json_object_object_add(my_object, "localHost", json_object_new_boolean(isLocalHost()));
     json_object_object_add(my_object, "systemHost", json_object_new_boolean(isSystemHost()));
@@ -832,7 +683,7 @@ void Host::serialize(json_object *my_object, DetailsLevel details_level) {
     json_object_object_add(my_object, "is_blacklisted", json_object_new_boolean(isBlacklisted()));
 
     /* Generic Host */
-    json_object_object_add(my_object, "num_alerts", json_object_new_int(triggerAlerts() ? getNumAlerts() : 0));
+    json_object_object_add(my_object, "num_alerts", json_object_new_int(triggerAlerts() ? getNumTriggeredAlerts() : 0));
   }
 
   /* The value below is handled by reading dumps on disk as otherwise the string will be too long */
@@ -914,7 +765,7 @@ void Host::incNumFlows(time_t t, bool as_client, Host *peer) {
   }
 
   if(triggerAlerts())
-    counter->incHits(t);
+    counter->inc(t, this);
 
   stats->incNumFlows(as_client, peer);
 }
@@ -1047,13 +898,9 @@ void Host::luaUsedQuotas(lua_State* vm) {
 
 /* *************************************** */
 
-void Host::postHashAdd() {
-  loadAlertsCounter();
-}
-
-/* *************************************** */
-
 bool Host::incFlowAlertHits(time_t when) {
+  stats->incNumFlowAlerts();
+
   if(flow_alert_counter
      || (flow_alert_counter = new(std::nothrow) FlowAlertCounter(CONST_MAX_FLOW_ALERTS_PER_SECOND, CONST_MAX_THRESHOLD_CROSS_DURATION))) {
     return flow_alert_counter->incHits(when);
@@ -1276,10 +1123,34 @@ bool Host::statsResetRequested() {
 
 /* *************************************** */
 
-void Host::updateStats(struct timeval *tv) {
+void Host::updateStats(update_hosts_stats_user_data_t *update_hosts_stats_user_data) {
+  struct timeval *tv = update_hosts_stats_user_data->tv;
+  Mac *cur_mac = getMac();
+
+  if(get_state() == hash_entry_state_idle) {
+    set_hash_entry_state_ready_to_be_purged();
+
+    if(getNumTriggeredAlerts()
+       && (update_hosts_stats_user_data->acle
+	   || (update_hosts_stats_user_data->acle = new (std::nothrow) AlertCheckLuaEngine(alert_entity_host, minute_script /* doesn't matter */, iface)))
+       ) {
+      AlertCheckLuaEngine *acle = update_hosts_stats_user_data->acle;
+      lua_State *L = acle->getState();
+      acle->setHost(this);
+
+      lua_getglobal(L, ALERT_ENTITY_CALLBACK_RELEASE_ALERTS); /* Called function */
+
+      acle->pcall(0 /* 0 arguments */, 0 /* 0 results */);
+    }
+  }
+
   checkDataReset();
   checkStatsReset();
   checkBroadcastDomain();
+
+  /* OS detection */
+  if((os == os_unknown) && cur_mac && cur_mac->getFingerprint())
+    os = Utils::getOSFromFingerprint(cur_mac->getFingerprint(), cur_mac->get_manufacturer(), cur_mac->getDeviceType());
 
   num_active_flows_as_client.computeAnomalyIndex(tv->tv_sec),
     num_active_flows_as_server.computeAnomalyIndex(tv->tv_sec),
@@ -1389,7 +1260,10 @@ char* Host::get_tskey(char *buf, size_t bufsize) {
 void Host::dissectDropbox(const char *payload, u_int16_t payload_len) {
   json_object *o;
   enum json_tokener_error jerr;
-  char str[payload_len+1];
+  char str[1500];
+
+  if ((payload_len + 1) > (u_int16_t)sizeof(str))
+    return; /* Too long: this isn't a valid Dropbox packet */
 
   strncpy(str, payload, payload_len);
   str[payload_len] = '\0';
@@ -1402,7 +1276,7 @@ void Host::dissectDropbox(const char *payload, u_int16_t payload_len) {
     if(json_object_object_get_ex(o, "namespaces", &obj)) {
       struct array_list *l = json_object_get_array(obj);
       u_int len = (u_int)array_list_length(l);
-      
+
       dropbox_namespaces.clear();
 
       for(u_int i=0; i<len; i++) {
@@ -1448,4 +1322,18 @@ void Host::dumpDropbox(lua_State *vm) {
   lua_pushstring(vm, printMask(ip_buf, sizeof(ip_buf)));
   lua_insert(vm, -2);
   lua_settable(vm, -3);
+}
+
+/* **************************************************** */
+
+void Host::refreshDisableFlowAlertTypes() {
+  char keybuf[128], buf[128], rsp[32];
+
+  snprintf(buf, sizeof(buf), CONST_HOST_REFRESH_DISABLED_FLOW_ALERT_TYPES,
+    iface->get_id(), get_hostkey(keybuf, sizeof(keybuf), true));
+
+  if(!ntop->getRedis()->get(buf, rsp, sizeof(rsp)) && (rsp[0] != '\0'))
+    disabled_flow_status = atol(rsp);
+  else
+    disabled_flow_status = 0;
 }

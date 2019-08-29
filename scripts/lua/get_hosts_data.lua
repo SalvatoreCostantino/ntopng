@@ -35,7 +35,7 @@ local network      = _GET["network"]
 local cidr         = _GET["network_cidr"]
 local pool         = _GET["pool"]
 local country      = _GET["country"]
-local os_          = _GET["os"]
+local os_          = tonumber(_GET["os"])
 local mac          = _GET["mac"]
 local top_hidden   = ternary(_GET["top_hidden"] == "1", true, nil)
 
@@ -223,10 +223,10 @@ for _key, _value in pairsByKeys(vals, funct) do
 
    local column_ip = "<A HREF='"..url.."' "..
       ternary((have_nedge and drop_traffic), "style='text-decoration: line-through'", "")..
-      ">"..mapOS2Icon(stripVlan(key)).." </A>"
+      ">".. stripVlan(key) .." </A>"
 
    if((value.operatingSystem ~= 0) and (value["os"] == "")) then
-      column_ip = column_ip .. " "..getOperatingSystemIcon(value.operatingSystem)
+      column_ip = column_ip .. " ".. discover.getOsIcon(value.operatingSystem)
    end
 
    if value["systemhost"]    then column_ip = column_ip .. "&nbsp;<i class='fa fa-flag'></i> " end
@@ -242,7 +242,7 @@ for _key, _value in pairsByKeys(vals, funct) do
       column_ip = column_ip .."&nbsp;<a href='".. ntop.getHttpPrefix() .. "/lua/hosts_stats.lua?country="..host.country.."'><img src='".. ntop.getHttpPrefix() .. "/img/blank.gif' class='flag flag-".. string.lower(host.country) .."'></a> "
    end
 
-   local icon = getOSIcon(value["os"])
+   local icon = discover.getOsIcon(value["os"])
    if(host ~= nil) then
       icon = icon .." ".. discover.devtype2icon(host.devtype)
    end
@@ -296,13 +296,8 @@ for _key, _value in pairsByKeys(vals, funct) do
 
    record["column_name"] = column_name
 
-   local column_vlan
-   if(value["vlan"] ~= nil) then
-      if(value["vlan"] ~= 0) then
-	 column_vlan = value["vlan"]
-      else
-	 column_vlan = 0
-      end
+   if value["vlan"] > 0 then
+      record["column_vlan"] = value["vlan"]
    end
 
    record["column_since"] = secondsToTime(now-value["seen.first"] + 1)
@@ -342,8 +337,8 @@ for _key, _value in pairsByKeys(vals, funct) do
       column_info = column_info.." <span title='"..
 	 (ternary(drop_traffic, i18n("host_config.unblock_host_traffic"), i18n("host_config.drop_all_host_traffic")))..
 	 "' class='label label-"..(ternary(drop_traffic, "danger", "default")).." block-badge' "..
-	 (ternary(isAdministrator(), "onclick='block_host(\\\""..symkey.."\\\", \\\""..hostinfo2url(value)..
-		     "\\\");' style='cursor: pointer;'", "")).."><i class='fa fa-ban' /></span>"
+	 (ternary(isAdministrator(), "onclick='block_host(\""..symkey.."\", \""..hostinfo2url(value)..
+		     "\");' style='cursor: pointer;'", "")).."><i class='fa fa-ban' /></span>"
    end
 
    record["column_info"] = column_info

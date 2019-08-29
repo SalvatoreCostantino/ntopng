@@ -108,6 +108,7 @@
 
 #define ZMQ_COMPATIBILITY_MSG_VERSION 1
 #define ZMQ_MSG_VERSION           2
+#define ZMQ_MSG_VERSION_TLV       3
 #define LOGIN_URL                 "/lua/login.lua"
 #define LOGOUT_URL                "/lua/logout.lua"
 #define CAPTIVE_PORTAL_URL        "/lua/captive_portal.lua"
@@ -135,7 +136,7 @@
 #define NO_UID                    ((u_int32_t)-1)
 #define NO_PID                    ((u_int32_t)-1)
 #define NO_NDPI_PROTOCOL          ((u_int)-1)
-#define NDPI_MIN_NUM_PACKETS      10
+#define NDPI_MIN_NUM_PACKETS      12
 #define GTP_U_V1_PORT             2152
 #define TZSP_PORT                 37008
 #define CAPWAP_DATA_PORT          5247
@@ -464,6 +465,7 @@
 #define CONST_DEFAULT_ALERT_REMOTE_TO_REMOTE_ENABLED      0
 #define CONST_DEFAULT_ALERT_DROPPED_FLOWS_ENABLED         0
 #define CONST_DEFAULT_ALERT_DEVICE_PROTOCOLS_ENABLED      0
+#define CONST_DEFAULT_ALERT_DANGEROUS_PROTOCOLS_ENABLED   1
 #define CONST_DEFAULT_ALERT_ELEPHANT_FLOWS_ENABLED        0
 #define CONST_DEFAULT_ALERT_LONGLIVED_FLOWS_ENABLED       1
 #define CONST_DEFAULT_ALERT_DATA_EXFILTRATION_ENABLED     1
@@ -505,15 +507,13 @@
 #define CONST_AGGREGATIONS            "aggregations"
 #define CONST_HOST_CONTACTS           "host_contacts"
 
+#define ALERT_ENTITY_CALLBACK_CHECK_ALERTS    "checkAlerts"
+#define ALERT_ENTITY_CALLBACK_RELEASE_ALERTS  "releaseAlerts"
+
 #define CONST_INFLUXDB_FILE_QUEUE          "ntopng.influx_file_queue"
 #define CONST_INFLUXDB_FLUSH_TIME          10 /* sec */
 #define CONST_INFLUXDB_MAX_DUMP_SIZE       4194304 /* 4 MB */
-#define CONST_ALERT_MSG_QUEUE                    "ntopng.alert_queue"
-#define CONST_ALERT_MAC_IP_QUEUE                 "ntopng.alert_mac_ip_queue"
-#define CONST_ALERT_OUTSIDE_DHCP_RANGE           "ntopng.alert_outside_dhcp_range_queue"
-#define CONST_ALERT_NFQ_FLUSHED                  "ntopng.alert_nfq_flushed_queue"
-#define CONST_ALERT_HOST_REMOTE_TO_REMOTE        "ntopng.alert_host_remote_to_remote"
-#define CONST_ALERT_BCAST_DOMAIN_TOO_LARGE_QUEUE "ntopng.alert_bcast_domain_too_large"
+#define CONST_ALERT_STORE_QUEUE            "ntopng.alert_store_queue"
 #define CONST_REMOTE_TO_REMOTE_MAX_QUEUE   32
 #define CONST_SQL_QUEUE                    "ntopng.sql_queue"
 #define CONST_SQL_BATCH_SIZE               32
@@ -541,11 +541,9 @@
 #define CONST_NBOX_PASSWORD                 NTOPNG_PREFS_PREFIX".nbox_password"
 #define CONST_IFACE_ID_PREFS                NTOPNG_PREFS_PREFIX".iface_id"
 #define CONST_IFACE_SCALING_FACTOR_PREFS    NTOPNG_PREFS_PREFIX".iface_%d.scaling_factor"
-#define CONST_IFACE_PACKET_DROPS_ALERT_PREFS NTOPNG_PREFS_PREFIX".iface_%d.packet_drops_alert"
 #define CONST_IFACE_HIDE_FROM_TOP_PREFS     NTOPNG_PREFS_PREFIX".iface_%d.hide_from_top"
 #define CONST_IFACE_COMPANIONS_SET          NTOPNG_PREFS_PREFIX".companion_interface.ifid_%d.companion_of"
-#define CONST_HOST_ANOMALIES_THRESHOLD      NTOPNG_PREFS_PREFIX".%s:%d.alerts_config"
-#define CONST_HOSTS_ALERT_COUNTERS          "ntopng.cache.alerts.iface_%u.host_engaged_alert_counters"
+#define CONST_HOST_REFRESH_DISABLED_FLOW_ALERT_TYPES NTOPNG_PREFS_PREFIX".alerts.ifid_%d.disabled_status.host_%s"
 #define CONST_REMOTE_HOST_IDLE_PREFS        NTOPNG_PREFS_PREFIX".non_local_host_max_idle"
 #define CONST_FLOW_MAX_IDLE_PREFS           NTOPNG_PREFS_PREFIX".flow_max_idle"
 #define CONST_INTF_RRD_RAW_DAYS             NTOPNG_PREFS_PREFIX".intf_rrd_raw_days"
@@ -608,6 +606,7 @@
 #define CONST_RUNTIME_PREFS_ALERT_REMOTE_TO_REMOTE     NTOPNG_PREFS_PREFIX".remote_to_remote_alerts"
 #define CONST_RUNTIME_PREFS_ALERT_DROPPED_FLOWS        NTOPNG_PREFS_PREFIX".dropped_flows_alerts"
 #define CONST_RUNTIME_PREFS_ALERT_DEVICE_PROTOCOLS     NTOPNG_PREFS_PREFIX".device_protocols_alerts"
+#define CONST_RUNTIME_PREFS_ALERT_DANGEROUS_PROTOCOLS  NTOPNG_PREFS_PREFIX".potentially_dangerous_protocols_alerts"
 #define CONST_RUNTIME_PREFS_ALERT_ELEPHANT_FLOWS       NTOPNG_PREFS_PREFIX".elephant_flows_alerts"
 #define CONST_RUNTIME_PREFS_ALERT_LONGLIVED_FLOWS      NTOPNG_PREFS_PREFIX".longlived_flows_alerts"
 #define CONST_RUNTIME_PREFS_ALERT_DATA_EXFILTRATION    NTOPNG_PREFS_PREFIX".data_exfiltration_alerts"
@@ -846,12 +845,12 @@
 #define STORE_MANAGER_MAX_KEY                20
 #define DEFAULT_GLOBAL_DNS                   ""
 #define DEFAULT_SAFE_SEARCH_DNS              "208.67.222.123" /* OpenDNS Family Shield */
+#define ALERTS_MANAGER_MAX_AGGR_SECS         300 /* Aggregate equal alerts if generated within this interval */
 #define ALERTS_MANAGER_MAX_ENTITY_ALERTS     1024
 #define ALERTS_MANAGER_MAX_FLOW_ALERTS       16384
-#define ALERTS_MANAGER_TABLE_NAME            "closed_alerts"
 #define ALERTS_MANAGER_FLOWS_TABLE_NAME      "flows_alerts"
-#define ALERTS_MANAGER_ENGAGED_TABLE_NAME    "engaged_alerts"
-#define ALERTS_MANAGER_STORE_NAME            "alerts_v9.db"
+#define ALERTS_MANAGER_TABLE_NAME            "alerts"
+#define ALERTS_MANAGER_STORE_NAME            "alerts_v14.db"
 #define ALERTS_MANAGER_QUEUE_NAME            "ntopng.alerts.ifid_%i.queue"
 #define ALERTS_MANAGER_MAKE_ROOM_ALERTS      "ntopng.cache.alerts.ifid_%i.make_room_closed_alerts"
 #define ALERTS_MANAGER_MAKE_ROOM_FLOW_ALERTS "ntopng.cache.alerts.ifid_%i.make_room_flow_alerts"
@@ -869,6 +868,7 @@
 #define SHUTDOWN_SCRIPT_PATH       "shutdown.lua"
 #define HOUSEKEEPING_SCRIPT_PATH   "housekeeping.lua"
 #define DISCOVER_SCRIPT_PATH       "discover.lua"
+#define TIMESERIES_SCRIPT_PATH     "timeseries.lua"
 #define UPGRADE_SCRIPT_PATH        "upgrade.lua"
 #define PINGER_SCRIPT_PATH         "pinger.lua"
 #define SECOND_SCRIPT_PATH         "second.lua"
@@ -995,7 +995,7 @@
 #define NO_HOST_POOL_ID                 0
 /* Flow aggregation duration is expressed in housekeeping periods. If housekeeping frequency
    is 5 secs, a flow aggregation duration of 12 equals to 1 minute. */
-#define FLOW_AGGREGATION_DURATION       60
+#define FLOW_AGGREGATION_DURATION       300  /* seconds, 5 minutes */
 #define FLOW_AGGREGATION_MAX_AGGREGATES 1000
 #define FLOW_AGGREGATION_NUM_TOP_AGGRS  1000
 #define FLOW_AGGREGATION_NUM_TOP_HOSTS  100
@@ -1024,7 +1024,7 @@ extern struct ntopngLuaContext* getUserdata(struct lua_State *vm);
 
 #define MIN_NUM_HASH_WALK_ELEMS      512
 
-#define EBPF_QUEUE_LEN               4096
+#define COMPANION_QUEUE_LEN          4096
 
 #ifdef NTOPNG_EMBEDDED_EDITION
 #define DEFAULT_THREAD_POOL_SIZE     1
@@ -1051,7 +1051,7 @@ extern struct ntopngLuaContext* getUserdata(struct lua_State *vm);
         ticks __profiling_sect_start[n]; \
         const char *__profiling_sect_label[n]; \
         ticks __profiling_sect_tot[n]
-#define PROFILING_INIT() memset(__profiling_sect_tot, 0, sizeof(__profiling_sect_tot))
+#define PROFILING_INIT() memset(__profiling_sect_tot, 0, sizeof(__profiling_sect_tot)), memset(__profiling_sect_label, 0, sizeof(__profiling_sect_label))
 #define PROFILING_SECTION_ENTER(l,i) __profiling_sect_start[i] = Utils::getticks(), __profiling_sect_label[i] = l
 #define PROFILING_SECTION_EXIT(i)    __profiling_sect_tot[i] += Utils::getticks() - __profiling_sect_start[i]
 #define PROFILING_SUB_SECTION_ENTER(f, l, i) f->profiling_section_enter(l, i)

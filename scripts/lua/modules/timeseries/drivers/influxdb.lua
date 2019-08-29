@@ -8,7 +8,9 @@ local ts_common = require("ts_common")
 
 local json = require("dkjson")
 local os_utils = require("os_utils")
+local alerts_api = require("alerts_api")
 require("ntop_utils")
+require "alert_utils"
 
 --
 -- Sample query:
@@ -18,6 +20,8 @@ require("ntop_utils")
 --
 
 local INFLUX_QUERY_TIMEMOUT_SEC = 5
+local INFLUX_MAX_EXPORT_QUEUE_LEN = 200
+local INFLUX_EXPORT_QUEUE = "ntopng.influx_file_queue"
 local MIN_INFLUXDB_SUPPORTED_VERSION = "1.5.1"
 local FIRST_AGGREGATION_TIME_KEY = "ntopng.prefs.influxdb.first_aggregation_time"
 
@@ -146,6 +150,28 @@ local function getSchemaRetentionPolicy(schema, tstart, tend, options)
   end
 
   return "raw"
+end
+
+-- ##############################################
+
+-- This is necessary to avoid fetching a point which is not already
+-- aggregated by the retention policy
+local function fixTendForRetention(tend, rp)
+  local now = os.time()
+
+  if(rp == "1h") then
+    local current_hour = now - (now % 3600)
+    return(math.min(tend, current_hour - 3600))
+  elseif(rp == "1d") then
+    local current_day = os.date("*t", now)
+    current_day.min = 0
+    current_day.sec = 0
+    current_day.hour = 0
+    current_day = os.time(current_day)
+    return(math.min(tend, current_day - 86400))
+  end
+
+  return(tend)
 end
 
 -- ##############################################
@@ -281,8 +307,11 @@ local function influx2Series(schema, tstart, tend, tags, options, data, time_ste
 
   -- The first time available in the returned data
   local first_t = data.values[1][1]
+  -- Align tstart to the first timestamp
+  tstart = tstart + (first_t - tstart) % time_step
+
   -- next_t holds the expected timestamp of the next point to process
-  local next_t = tstart + ((first_t - tstart) % time_step)
+  local next_t = tstart
   -- the next index to use for insertion in the result table
   local series_idx = 1
   --tprint(time_step .. ") " .. tstart .. " vs " .. first_t .. " - " .. next_t)
@@ -312,6 +341,17 @@ local function influx2Series(schema, tstart, tend, tags, options, data, time_ste
       series[i-1].data[series_idx] = val
     end
 
+    --traceError(TRACE_NORMAL, TRACE_CONSOLE, string.format("@ %u = %.2f", cur_t, values[2]))
+    if(false) then -- consinstency check
+      local expected_t = next_t
+      local actual_t = values[1]
+
+      if math.abs(expected_t - actual_t) >= time_step then
+        traceError(TRACE_WARNING, TRACE_CONSOLE,
+          string.format("Bad point timestamp: expected %u, found %u [value = %.2f]", expected_t, actual_t, values[2]))
+      end
+    end
+
     series_idx = series_idx + 1
     next_t = next_t + time_step
 
@@ -331,7 +371,7 @@ local function influx2Series(schema, tstart, tend, tags, options, data, time_ste
 
   local count = series_idx - 1
 
-  return series, count
+  return series, count, tstart
 end
 
 -- Test only
@@ -420,7 +460,7 @@ function driver:_makeTotalSerie(schema, query_schema, raw_step, tstart, tend, ta
 
   data = data.series[1]
 
-  local series, count = influx2Series(schema, tstart + time_step, tend, tags, options, data, time_step)
+  local series, count, tstart = influx2Series(schema, tstart + time_step, tend, tags, options, data, time_step)
   return series[1].data
 end
 
@@ -463,6 +503,8 @@ function driver:query(schema, tstart, tend, tags, options)
   local metrics = {}
   local retention_policy = getSchemaRetentionPolicy(schema, tstart, tend, options)
   local query_schema, raw_step, data_type = retentionPolicyToSchema(schema, retention_policy, self.db)
+
+  tend = fixTendForRetention(tend, retention_policy)
   local time_step = ts_common.calculateSampledTimeStep(raw_step, tstart, tend, options)
 
   -- NOTE: this offset is necessary to fix graph edge points when data insertion is not aligned with tstep
@@ -473,7 +515,7 @@ function driver:query(schema, tstart, tend, tags, options)
     if data_type == ts_common.metrics.counter then
       metrics[i] = "(DERIVATIVE(MEAN(\"" .. metric .. "\")) / ".. time_step ..") as " .. metric
     else -- gauge / derivative
-      metrics[i] = "MEAN(\"".. metric .."\") as " .. metric
+      metrics[i] = schema:getAggregationFunction() .. "(\"".. metric .."\") as " .. metric
     end
   end
 
@@ -496,7 +538,7 @@ function driver:query(schema, tstart, tend, tags, options)
   else
     -- Note: we are working with intervals because of derivatives. The first interval ends at tstart + time_step
     -- which is the first value returned by InfluxDB
-    series, count = influx2Series(schema, tstart + time_step, tend, tags, options, data.series[1], time_step)
+    series, count, tstart = influx2Series(schema, tstart + time_step, tend, tags, options, data.series[1], time_step)
   end
 
   local total_serie = nil
@@ -560,6 +602,9 @@ function driver:query(schema, tstart, tend, tags, options)
       end
     end
 
+    -- shift tstart as we added one point
+    tstart = tstart - time_step
+
     if total_serie then
       local label = series and series[1].label
       local additional_pt = self:_makeTotalSerie(schema, query_schema, raw_step, tstart-time_step, tstart, tags, options, url, time_step, label, unaligned_offset, data_type) or {options.fill_value}
@@ -618,71 +663,308 @@ function driver:_exportErrorMsg(ret)
   return i18n("alert_messages.influxdb_write_error", {influxdb=self.url, err=err_msg}) .. suffix
 end
 
+-- ##############################################
+
+-- Exports a timeseries file in line format to InfluxDB
+-- Returns a tuple(success, file_still_existing)
 function driver:_exportTsFile(fname)
+  local rv = true
+
   if not ntop.exists(fname) then
-    return(false)
+    traceError(TRACE_ERROR, TRACE_CONSOLE,
+      string.format("Cannot find ts file %s. Some timeseries data will be lost.", fname))
+    return false, false
   end
 
   -- Delete the file after POST
-  local delete_file_after_post = true
-  local ret = ntop.postHTTPTextFile(self.username, self.password, self.url .. "/write?db=" .. self.db, fname, delete_file_after_post, 5 --[[ timeout ]])
+  local delete_file_after_post = false
+  local ret = ntop.postHTTPTextFile(self.username, self.password, self.url .. "/write?db=" .. self.db, fname, delete_file_after_post, 30 --[[ timeout ]])
 
   if((ret == nil) or ((ret.RESPONSE_CODE ~= 200) and (ret.RESPONSE_CODE ~= 204))) then
-    local msg = self:_exportErrorMsg(ret)
-    interface.storeAlert(alertEntity("influx_db"), self.url, alertType("influxdb_export_failure"), alertSeverity("error"), msg)
+    -- local msg = self:_exportErrorMsg(ret)
 
-     --delete the file manually
-    os.remove(fname)
-    return(false)
+    -- local influx_alert = alerts:newAlert({
+    --   entity = "influx_db",
+    --   type = "influxdb_export_failure",
+    --   severity = "warning",
+    -- })
+
+    -- influx_alert:trigger(self.url, msg)
+
+    rv = false
   end
 
-  return(true)
+  return rv
 end
 
-function driver:export()
-  while(true) do
-    interface.select(getSystemInterfaceId())
+-- ##############################################
 
-    local name_id = ntop.lpopCache("ntopng.influx_file_queue")
-    local rv
+local INFLUX_KEY_PREFIX = "ntopng.cache.influxdb."
 
-    if((name_id == nil) or (name_id == "")) then
-      break
-    end
+-- Keys to identify redis hash caches to keep stats counters
+-- such as dropped and exported points
+local INFLUX_KEY_DROPPED_POINTS = INFLUX_KEY_PREFIX.."dropped_points"
+local INFLUX_KEY_EXPORTED_POINTS = INFLUX_KEY_PREFIX.."exported_points"
+local INFLUX_KEY_EXPORTS = INFLUX_KEY_PREFIX.."exports"
+local INFLUX_KEY_FAILED_EXPORTS = INFLUX_KEY_PREFIX.."failed_exports"
 
-    local parts = split(name_id, "|")
-    local ifid_str = parts[1]
-    local ifid = tonumber(ifid_str)
-    local time_ref = tonumber(parts[2])
-    local export_id = tonumber(parts[3])
-    local num_points = tonumber(parts[4])
+-- Use this flag as TTL-based redis keys to check wether the health
+-- of influxdb is OK.
+local INFLUX_FLAGS_TIMEOUT = 60 -- keep the issue for 60 seconds
+local INFLUX_FLAG_DROPPING_POINTS = INFLUX_KEY_PREFIX.."flag_dropping_points"
+local INFLUX_FLAG_FAILING_EXPORTS = INFLUX_KEY_PREFIX.."flag_failing_exports"
 
-    if((ifid == nil) or (time_ref == nil) or (export_id == nil) or (num_points == nil)) then
-      traceError(TRACE_ERROR, TRACE_CONSOLE, "Invalid name "..name_id.."\n")
-      break
-    end
+-- ##############################################
 
-    local time_key = "ntopng.cache.influxdb_export_time_" .. self.db .. "_" .. ifid
-    local prev_t = tonumber(ntop.getCache(time_key)) or 0
-    local fname = os_utils.fixPath(dirs.workingdir .. "/" .. ifid .. "/ts_export/" .. export_id .. "_" .. time_ref)
+local function inc_val(k, ifid, val_to_add)
+   local val = tonumber(ntop.getHashCache(k, ifid)) or 0
 
-    --local t = os.time()
-    rv = self:_exportTsFile(fname)
-    interface.select(ifid_str)
+   val = val + val_to_add
+   ntop.setHashCache(k, ifid, string.format("%i", val))
+end
 
-    if rv then
-      interface.incInfluxExportedPoints(num_points)
-    else
-      interface.incInfluxDroppedPoints(num_points)
-      break
-    end
+-- ##############################################
 
-    -- Successfully exported
-    --tprint("Exported ".. fname .." in " .. (os.time() - t) .. " sec")
-    ntop.setCache(time_key, tostring(math.max(prev_t, time_ref)))
-  end
+local function inc_dropped_points(ifid, num_points)
+   ntop.setCache(INFLUX_FLAG_DROPPING_POINTS, "true", INFLUX_FLAGS_TIMEOUT)
+   inc_val(INFLUX_KEY_DROPPED_POINTS, ifid, num_points)
+end
 
-  interface.select(getSystemInterfaceId())
+-- ##############################################
+
+local function inc_exported_points(ifid, num_points)
+   inc_val(INFLUX_KEY_EXPORTED_POINTS, ifid, num_points)
+end
+
+-- ##############################################
+
+local function inc_exports(ifid)
+   inc_val(INFLUX_KEY_EXPORTS, ifid, 1)
+end
+
+-- ##############################################
+
+local function inc_failed_exports(ifid)
+   ntop.setCache(INFLUX_FLAG_FAILING_EXPORTS, "true", INFLUX_FLAGS_TIMEOUT)
+   inc_val(INFLUX_KEY_FAILED_EXPORTS, ifid, 1)
+end
+
+-- ##############################################
+
+local function del_all_vals()
+   ntop.delCache(INFLUX_KEY_DROPPED_POINTS)
+   ntop.delCache(INFLUX_KEY_EXPORTED_POINTS)
+   ntop.delCache(INFLUX_KEY_EXPORTS)
+   ntop.delCache(INFLUX_KEY_FAILED_EXPORTS)
+   ntop.delCache(INFLUX_FLAG_DROPPING_POINTS)
+   ntop.delCache(INFLUX_KEY_FAILED_EXPORTS)
+end
+
+-- ##############################################
+
+function driver:get_dropped_points(ifid)
+   return tonumber(ntop.getHashCache(INFLUX_KEY_DROPPED_POINTS, ifid)) or 0
+end
+
+-- ##############################################
+
+function driver:get_exported_points(ifid)
+   return tonumber(ntop.getHashCache(INFLUX_KEY_EXPORTED_POINTS, ifid)) or 0
+end
+
+-- ##############################################
+
+function driver:get_exports(ifid)
+   return tonumber(ntop.getHashCache(INFLUX_KEY_EXPORTS, ifid)) or 0
+end
+
+-- ##############################################
+
+local function is_dropping_points()
+   return ntop.getCache(INFLUX_FLAG_DROPPING_POINTS) == "true"
+end
+
+-- ##############################################
+
+local function is_failing_exports()
+   return ntop.getCache(INFLUX_FLAG_FAILING_EXPORTS) == "true"
+end
+
+-- ##############################################
+
+-- Returns an indication of the current InfluxDB health.
+-- Health is "green" when everything is working as expected,
+-- "yellow" when there are recoverable issues, or "red" when
+-- there is some critical error.
+-- Health corresponds to the current status, i.e., a past
+-- error, will no longer be considered
+function driver:get_health()
+   if is_dropping_points() then
+      return "red"
+   elseif is_failing_exports() then
+      return "yellow"
+   end
+
+   return "green"
+end
+
+-- ##############################################
+
+local function deleteExportableFile(exportable)
+   if exportable and exportable["fname"] then
+      if ntop.exists(exportable["fname"]) then
+	 os.remove(exportable["fname"])
+	 traceError(TRACE_INFO, TRACE_CONSOLE, "Removed file "..exportable["fname"])
+      end
+   end
+end
+
+-- ##############################################
+
+-- When we giveup for a certain exportable, that is, when we are not
+-- going to try and export it again, we call this function
+local function dropExportable(exportable)
+   inc_dropped_points(exportable["ifid"], exportable["num_points"])
+   deleteExportableFile(exportable)
+end
+
+-- ##############################################
+
+function driver:_droppedExportablesAlert()
+   local alert_periodicity = 60
+   local k = "ntopng.cache.influxdb_dropped_points_alert_triggered"
+
+   if ntop.getCache(k) ~= "1" then
+      alerts_api.store(
+        alerts_api.influxdbEntity(self.url),
+        alerts_api.influxdbDroppedPointsType(self.url)
+      )
+
+      -- Just to avoid doing :trigger too often
+      ntop.setCache(k, "1", alert_periodicity / 2)
+   end
+end
+
+-- ##############################################
+
+-- Call this function when an exportable has been sent to InfluxDB
+-- with success
+local function exportableSuccess(exportable)
+   inc_exported_points(exportable["ifid"], exportable["num_points"])
+   inc_exports(exportable["ifid"])
+   deleteExportableFile(exportable)
+end
+
+-- ##############################################
+
+-- Call this function when the export has failed but it is going
+-- to be tried again
+local function exportableFailure(exportable)
+   inc_failed_exports(exportable["ifid"])
+end
+
+-- ##############################################
+
+function driver:_performExport(exportable)
+   local time_key = "ntopng.cache.influxdb_export_time_" .. self.db .. "_" .. exportable["ifid"]
+   local prev_t = tonumber(ntop.getCache(time_key)) or 0
+
+   local start_t = ntop.gettimemsec()
+   local rv = self:_exportTsFile(exportable["fname"])
+   local end_t = ntop.gettimemsec()
+
+   if rv then
+      -- Successfully exported
+      traceError(TRACE_INFO, TRACE_CONSOLE,
+		 string.format("Successfully exported %u points in %.2fs", exportable["num_points"], (end_t - start_t)))
+      ntop.setCache(time_key, tostring(math.max(prev_t, exportable["time_ref"])))
+   end
+
+   return rv
+end
+
+-- ##############################################
+
+local function getExportable(item)
+   local parts = split(item, "|")
+   local ifid_str = parts[1]
+   local ifid = tonumber(ifid_str)
+   local time_ref = tonumber(parts[2])
+   local export_id = tonumber(parts[3])
+   local num_points = tonumber(parts[4])
+   local res = {item = item}
+
+   if not ifid or not time_ref or not export_id or not num_points then
+      traceError(TRACE_ERROR, TRACE_CONSOLE, "Missing mandatory data from the exportable item "..(item or ''))
+      return res
+   end
+
+   res["fname"]      = os_utils.fixPath(dirs.workingdir .. "/" .. ifid .. "/ts_export/" .. export_id .. "_" .. time_ref)
+   res["ifid_str"]   = ifid_str
+   res["ifid"]       = ifid
+   res["num_points"] = num_points
+   res["time_ref"]   = time_ref
+
+   return res
+end
+
+-- ##############################################
+
+function driver:export(deadline)
+   interface.select(getSystemInterfaceId())
+
+   local dropped_exportables = false
+   local num_pending = ntop.llenCache(INFLUX_EXPORT_QUEUE)
+
+   if num_pending == 0 then
+      return
+   end
+
+   traceError(TRACE_INFO, TRACE_CONSOLE, "Exporting "..num_pending.." items")
+
+   -- Remove the old guys for which it wasn't possible to export
+   while num_pending > INFLUX_MAX_EXPORT_QUEUE_LEN do
+      local being_dropped = ntop.lpopCache(INFLUX_EXPORT_QUEUE)
+      local exportable_to_be_dropped = getExportable(being_dropped)
+
+      dropExportable(exportable_to_be_dropped)
+
+      traceError(TRACE_INFO, TRACE_CONSOLE, "Dropped old item "..(being_dropped or ''))
+
+      num_pending = num_pending - 1
+
+      if not dropped_exportables then
+	 dropped_exportables = true
+      end
+   end
+
+   if dropped_exportables then
+      self:_droppedExportablesAlert()
+   end
+
+   -- Post the guys using a pretty long timeout
+   local pending_exports = ntop.lrangeCache(INFLUX_EXPORT_QUEUE, 0, -1)
+
+   if not pending_exports then
+      return
+   end
+
+   -- Process pending exports older-to-newer
+   for _, cur_export in ipairs(pending_exports) do
+      local exportable = getExportable(cur_export)
+      local res = self:_performExport(exportable)
+
+      if res then
+	 -- export SUCCEDED
+	 exportableSuccess(exportable)
+	 ntop.lremCache(INFLUX_EXPORT_QUEUE, cur_export)
+      else
+	 -- export FAILED, retry next time
+	 exportableFailure(exportable)
+      end
+   end
+
+   interface.select(getSystemInterfaceId())
 end
 
 -- ##############################################
@@ -842,6 +1124,7 @@ function driver:topk(schema, tags, tstart, tend, options, top_tags)
   local top_tag = top_tags[1]
   local retention_policy = getSchemaRetentionPolicy(schema, tstart, tend, options)
   local query_schema, raw_step, data_type = retentionPolicyToSchema(schema, retention_policy, self.db)
+  tend = fixTendForRetention(tend, retention_policy)
 
   -- NOTE: this offset is necessary to fix graph edge points when data insertion is not aligned with tstep
   local unaligned_offset = raw_step - 1
@@ -951,6 +1234,9 @@ function driver:topk(schema, tags, tstart, tend, options, top_tags)
   if options.initial_point and total_serie then
     local additional_pt = self:_makeTotalSerie(schema, query_schema, raw_step, tstart-time_step, tstart, tags, options, url, time_step, label, unaligned_offset, data_type) or {options.fill_value}
     table.insert(total_serie, 1, additional_pt[1])
+
+    -- shift tstart as we added one point
+    tstart = tstart - time_step
   end
 
   if options.calculate_stats and total_serie then
@@ -1097,14 +1383,24 @@ end
 -- ##############################################
 
 function driver:getDiskUsage()
-  local query = 'SELECT SUM(last) FROM (select LAST(diskBytes) FROM "monitor"."shard" where "database" = \''.. self.db ..'\' group by id)'
+   local query = 'SELECT SUM(last) FROM (select LAST(diskBytes) FROM "monitor"."shard" where "database" = \''.. self.db ..'\' group by id)'
   return single_query(self.url .. "/query?db=_internal", query, self.username, self.password)
 end
 
 -- ##############################################
 
 function driver:getMemoryUsage()
-  local query = 'SELECT LAST(Sys) FROM "_internal".."runtime"'
+  --[[
+     This function attempts to match the memory used by the process, memory which is 
+     the top/htop RSS (Resident Stack Size) which is what it actually matters.
+
+     InfluxDB docs leak explanations of how to interpred memory-related numbers:
+     https://docs.influxdata.com/platform/monitoring/influxdata-platform/tools/measurements-internal/#runtime
+
+     So the formula below has been obtained by tentatives and it seems to be pretty
+     close to what top reports.
+  --]]
+  local query = 'SELECT LAST(Sys) - LAST(HeapReleased) FROM "_internal".."runtime"'
   return single_query(self.url .. "/query?db=_internal", query, self.username, self.password)
 end
 
@@ -1201,11 +1497,13 @@ function driver.init(dbname, url, days_retention, username, password, verbose)
   local version, err = getInfluxdbVersion(url, username, password)
 
   if((not version) and (err ~= nil)) then
+    ntop.setCache("ntopng.cache.influxdb.last_error", err)
     return false, err
   elseif((not version) or (not isCompatibleVersion(version))) then
     local err = i18n("prefs.incompatible_influxdb_version_found",
       {required=MIN_INFLUXDB_SUPPORTED_VERSION, found=version, url="https://portal.influxdata.com/downloads"})
 
+    ntop.setCache("ntopng.cache.influxdb.last_error", err)
     traceError(TRACE_ERROR, TRACE_CONSOLE, err)
     return false, err
   end
@@ -1220,14 +1518,16 @@ function driver.init(dbname, url, days_retention, username, password, verbose)
     local reply = json.decode(res.CONTENT)
 
     if reply and reply.results and reply.results[1] and reply.results[1].series then
-      local dbs = reply.results[1].series[1] or {values={}}
+      local dbs = reply.results[1].series[1]
 
-      for _, row in pairs(dbs.values) do
-        local user_db = row[1]
+      if((dbs ~= nil) and (dbs.values ~= nil)) then
+        for _, row in pairs(dbs.values) do
+          local user_db = row[1]
 
-        if user_db == dbname then
-          db_found = true
-          break
+          if user_db == dbname then
+            db_found = true
+            break
+          end
         end
       end
     end
@@ -1242,6 +1542,7 @@ function driver.init(dbname, url, days_retention, username, password, verbose)
     if not res or (res.RESPONSE_CODE ~= 200) then
       local err = i18n("prefs.influxdb_create_error", {db=dbname, msg=getResponseError(res)})
 
+      ntop.setCache("ntopng.cache.influxdb.last_error", err)
       traceError(TRACE_ERROR, TRACE_CONSOLE, err)
       return false, err
     end
@@ -1267,6 +1568,7 @@ function driver.init(dbname, url, days_retention, username, password, verbose)
     -- NOTE: updateCQRetentionPolicies will be called automatically as driver:setup is triggered after this
   end
 
+  ntop.delCache("ntopng.cache.influxdb.last_error")
   return true, i18n("prefs.successfully_connected_influxdb", {db=dbname, version=version})
 end
 
@@ -1352,7 +1654,7 @@ local function getCqQuery(dbname, tags, schema, source, dest, step, dest_step, r
     local means = {}
 
     for _, metric in ipairs(schema._metrics) do
-      means[#means + 1] = string.format('MEAN(%s) as %s', metric, metric)
+      means[#means + 1] = string.format('%s(%s) as %s', schema:getAggregationFunction(), metric, metric)
     end
 
     means = table.concat(means, ",")
@@ -1393,6 +1695,10 @@ end
 function driver:setup(ts_utils)
   local queries = {}
   local max_batch_size = 25 -- note: each query is about 400 characters
+
+  -- Clear saved values (e.g., number of exported points) as
+  -- we want to start clean and keep values since-ntopng-startup
+  del_all_vals()
 
   -- Ensure that the database exists
   driver.init(self.db, self.url, nil, self.username, self.password)
@@ -1464,6 +1770,12 @@ function driver:setup(ts_utils)
   end
 
   return true
+end
+
+-- ##############################################
+
+function driver.getExportQueueLength()
+  return(ntop.llenCache(INFLUX_EXPORT_QUEUE))
 end
 
 -- ##############################################

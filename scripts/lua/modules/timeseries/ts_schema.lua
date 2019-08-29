@@ -80,13 +80,17 @@ function ts_schema:new(name, options)
 end
 
 function ts_schema:addTag(name)
-  self._tags[#self._tags + 1] = name
-  self.tags[name] = 1
+  if self.tags[name] == nil then
+    self._tags[#self._tags + 1] = name
+    self.tags[name] = 1
+  end
 end
 
 function ts_schema:addMetric(name)
-  self._metrics[#self._metrics + 1] = name
-  self.metrics[name] = 1
+  if self.metrics[name] == nil then
+    self._metrics[#self._metrics + 1] = name
+    self.metrics[name] = 1
+  end
 end
 
 function ts_schema:allTagsDefined(tags)
@@ -146,7 +150,26 @@ function ts_schema:verifyTagsAndMetrics(tags_and_metrics)
     end
   end
 
+  -- NOTE: the ifid tag is required in order to identify all the ts of
+  -- a given interface (also for the system interface). This is required in
+  -- order to properly delete them from "Manage Data".
+  if(tags.ifid == nil) then
+    traceError(TRACE_ERROR, TRACE_CONSOLE, "An 'ifid' tag is required in schema " .. self.name)
+    return nil
+  end
+
   return tags, metrics
+end
+
+function ts_schema:getAggregationFunction()
+  local fn = self.options.aggregation_function
+
+  if((fn ~= nil) and (ts_common.aggregation[fn] ~= nil)) then
+    return(fn)
+  end
+
+  -- fallback
+  return(ts_common.aggregation.mean)
 end
 
 return ts_schema

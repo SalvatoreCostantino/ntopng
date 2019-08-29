@@ -18,6 +18,7 @@ local page_utils = require("page_utils")
 local ts_utils = require("ts_utils")
 
 local network        = _GET["network"]
+local network_name   = _GET["network_cidr"]
 local page           = _GET["page"]
 
 interface.select(ifname)
@@ -25,7 +26,12 @@ local ifstats = interface.getStats()
 local ifId = ifstats.id
 local have_nedge = ntop.isnEdge()
 
-local network_name = ntop.getNetworkNameById(tonumber(network))
+if(not isEmptyString(network_name)) then
+  network = ntop.getNetworkIdByName(network_name)
+else
+  network_name = ntop.getNetworkNameById(tonumber(network))
+end
+
 local custom_name = getLocalNetworkAlias(network_name)
 
 local network_vlan   = tonumber(_GET["vlan"])
@@ -39,11 +45,6 @@ dofile(dirs.installdir .. "/scripts/lua/inc/menu.lua")
 
 if(network == nil) then
     print("<div class=\"alert alert alert-danger\"><img src=".. ntop.getHttpPrefix() .. "/img/warning.png> ".. i18n("network_details.network_parameter_missing_message") .. "</div>")
-    return
-end
-
-if(not ts_utils.exists("subnet:traffic", {ifid=ifId, subnet=network_name})) then
-    print("<div class=\"alert alert alert-danger\"><img src=".. ntop.getHttpPrefix() .. "/img/warning.png> " .. i18n("network_details.no_available_stats_for_network",{network=network_name}) .. "</div>")
     return
 end
 
@@ -66,7 +67,7 @@ else
     print("\n<li><a href=\""..nav_url.."&page=historical\"><i class='fa fa-area-chart fa-lg'></i></a></li>")
 end
 
-if areAlertsEnabled() and not ifstats.isView then
+if areAlertsEnabled() then
     if(page == "alerts") then
 	print("\n<li class=\"active\"><a href=\"#\"><i class=\"fa fa-warning fa-lg\"></i></a></li>\n")
     else
@@ -120,6 +121,7 @@ if page == "historical" then
       timeseries = {
 	 {schema="subnet:traffic",             label=i18n("traffic")},
 	 {schema="subnet:broadcast_traffic",   label=i18n("broadcast_traffic")},
+	 {schema="subnet:engaged_alerts",      label=i18n("show_alerts.engaged_alerts")},
 	 {schema="subnet:tcp_retransmissions", label=i18n("graphs.tcp_packets_retr"), nedge_exclude=1},
 	 {schema="subnet:tcp_out_of_order",    label=i18n("graphs.tcp_packets_ooo"), nedge_exclude=1},
 	 {schema="subnet:tcp_lost",            label=i18n("graphs.tcp_packets_lost"), nedge_exclude=1},
@@ -136,41 +138,10 @@ elseif (page == "config") then
    <input id="csrf" name="csrf" type="hidden" value="]] print(ntop.getRandomCSRFValue()) print[["/>
    <table class="table table-bordered table-striped">]]
 
-   -- Alerts
-   local trigger_alerts
-   local trigger_alerts_checked
-
     if _SERVER["REQUEST_METHOD"] == "POST" then
-      if _POST["trigger_alerts"] ~= "1" then
-	 trigger_alerts = false
-      else
-	 trigger_alerts = true
-      end
-
-      ntop.setHashCache(get_alerts_suppressed_hash_name(getInterfaceId(ifname)), network_name, tostring(trigger_alerts))
       setLocalNetworkAlias(network_name, _POST["custom_name"])
       custom_name = getLocalNetworkAlias(network_name)
     end
-
-      trigger_alerts = ntop.getHashCache(get_alerts_suppressed_hash_name(getInterfaceId(ifname)), network_name)
-
-      if trigger_alerts == "false" then
-	 trigger_alerts = false
-	 trigger_alerts_checked = ""
-      else
-	 trigger_alerts = true
-	 trigger_alerts_checked = "checked"
-      end
-
-      print [[<tr>
-	 <th>]] print(i18n("network_alert_config.trigger_network_alerts")) print[[</th>
-	 <td>
-	       <input type="checkbox" name="trigger_alerts" value="1" ]] print(trigger_alerts_checked) print[[>
-		  <i class="fa fa-exclamation-triangle fa-lg"></i>
-		  ]] print(i18n("network_alert_config.trigger_alerts_for_network",{network=network_name})) print[[
-	       </input>
-	 </td>
-      </tr>]]
 
    print [[<tr>
 	 <th>]] print(i18n("network_details.network_alias")) print[[</th>
@@ -191,7 +162,7 @@ elseif(page == "alerts") then
 
     drawAlertSourceSettings("network", network_name,
 	i18n("show_alerts.network_delete_config_btn", {network=network_name}), "show_alerts.network_delete_config_confirm",
-	"network_details.lua", {network=network})
+	"network_details.lua", {network=network}, network_name, "network")
 
 elseif page == "traffic_report" then
     dofile(dirs.installdir .. "/pro/scripts/lua/enterprise/traffic_report.lua")

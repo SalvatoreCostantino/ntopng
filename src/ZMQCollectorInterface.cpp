@@ -126,6 +126,17 @@ ZMQCollectorInterface::ZMQCollectorInterface(const char *_endpoint) : ZMQParserI
 /* **************************************************** */
 
 ZMQCollectorInterface::~ZMQCollectorInterface() {
+#ifdef PROFILING
+  u_int64_t n = recvStats.num_flows;
+  if(n > 0) {
+    for (u_int i = 0; i < PROFILING_NUM_SECTIONS; i++) {
+      if(PROFILING_SECTION_LABEL(i) != NULL)
+        ntop->getTrace()->traceEvent(TRACE_NORMAL, "[PROFILING] Section #%d '%s': AVG %llu ticks",
+          i, PROFILING_SECTION_LABEL(i), PROFILING_SECTION_AVG(i, n));
+    }
+  }
+#endif
+
   for(int i=0; i<num_subscribers; i++) {
     if(subscriber[i].endpoint) free(subscriber[i].endpoint);
     zmq_close(subscriber[i].socket);
@@ -137,9 +148,10 @@ ZMQCollectorInterface::~ZMQCollectorInterface() {
 /* **************************************************** */
 
 void ZMQCollectorInterface::collect_flows() {
-  struct zmq_msg_hdr h; /* NOTE: in network-byte-order format */
-  char payload[8192];
-  const u_int payload_len = sizeof(payload) - 1;
+  struct zmq_msg_hdr_v0 h0;
+  struct zmq_msg_hdr *h = (struct zmq_msg_hdr *) &h0; /* NOTE: in network-byte-order format */
+  char *payload;
+  const u_int payload_len = 32768;
   zmq_pollitem_t items[MAX_ZMQ_SUBSCRIBERS];
   u_int32_t zmq_max_num_polls_before_purge = MAX_ZMQ_POLLS_BEFORE_PURGE;
   u_int32_t now, next_purge_idle = (u_int32_t)time(NULL) + FLOW_PURGE_FREQUENCY;
@@ -147,11 +159,19 @@ void ZMQCollectorInterface::collect_flows() {
 
   ntop->getTrace()->traceEvent(TRACE_NORMAL, "Collecting flows on %s", ifname);
 
+  if((payload = (char*)malloc(payload_len+1 /* Leave a char for \0 */)) == NULL) {
+    ntop->getTrace()->traceEvent(TRACE_ERROR, "Out of memory");
+    return;
+  }
+  
   while(isRunning()) {
     while(idle()) {
       purgeIdle(time(NULL));
       sleep(1);
-      if(ntop->getGlobals()->isShutdown()) return;
+      if(ntop->getGlobals()->isShutdown()) {
+	free(payload);
+	return;
+      }
     }
 
     for(int i=0; i<num_subscribers; i++)
@@ -163,8 +183,11 @@ void ZMQCollectorInterface::collect_flows() {
       now = (u_int32_t)time(NULL);
       zmq_max_num_polls_before_purge--;
 
-      if((rc < 0) || (!isRunning())) return;
-
+      if((rc < 0) || (!isRunning())) {
+	free(payload);
+	return;
+      }
+      
       if(rc == 0 || now >= next_purge_idle || zmq_max_num_polls_before_purge == 0) {
 	purgeIdle(now);
 	next_purge_idle = now + FLOW_PURGE_FREQUENCY;
@@ -175,22 +198,34 @@ void ZMQCollectorInterface::collect_flows() {
     for(int subscriber_id = 0; subscriber_id < num_subscribers; subscriber_id++) {
       u_int32_t msg_id, last_msg_id;
       u_int8_t source_id = 0;
+      u_int32_t publisher_version = 0;
 	
       if(items[subscriber_id].revents & ZMQ_POLLIN) {
-	size = zmq_recv(items[subscriber_id].socket, &h, sizeof(h), 0);
+	size = zmq_recv(items[subscriber_id].socket, &h0, sizeof(h0), 0);
+
+        if(size == sizeof(struct zmq_msg_hdr))
+          h = (struct zmq_msg_hdr *) &h0; 
 
 	if(size == sizeof(struct zmq_msg_hdr_v0)) {
 	  /* Legacy version */
 	  msg_id = 0, source_id = 0;
-	} else if((size != sizeof(h)) || ((h.version != ZMQ_MSG_VERSION) && (h.version != ZMQ_COMPATIBILITY_MSG_VERSION))) {
+          publisher_version = h0.version;
+	} else if(size != sizeof(struct zmq_msg_hdr) || (
+            h->version != ZMQ_MSG_VERSION && 
+            h->version != ZMQ_MSG_VERSION_TLV &&
+            h->version != ZMQ_COMPATIBILITY_MSG_VERSION
+          )) {
 	  ntop->getTrace()->traceEvent(TRACE_WARNING,
-				       "Unsupported publisher version: your nProbe sender is outdated? [%u][%u]",
-				       sizeof(struct zmq_msg_hdr), sizeof(h));
+				       "Unsupported publisher version: your nProbe sender is outdated? [%u][%u][%u][%u][%u]",
+				       size, sizeof(struct zmq_msg_hdr), h->version, ZMQ_MSG_VERSION, ZMQ_COMPATIBILITY_MSG_VERSION);
 	  continue;
-	} else if(h.version == ZMQ_COMPATIBILITY_MSG_VERSION)
-	  source_id = 0, msg_id = h.msg_id; // host byte order
-	else
-	  source_id = h.source_id, msg_id = ntohl(h.msg_id);
+	} else if(h->version == ZMQ_COMPATIBILITY_MSG_VERSION) {
+	  source_id = 0, msg_id = h->msg_id; // host byte order
+          publisher_version = h->version;
+	} else {
+	  source_id = h->source_id, msg_id = ntohl(h->msg_id);
+          publisher_version = h->version;
+        }
 
 	if(source_id_last_msg_id.find(source_id) == source_id_last_msg_id.end())
 	  source_id_last_msg_id[source_id] = 0;
@@ -206,7 +241,8 @@ void ZMQCollectorInterface::collect_flows() {
 
 	    if(diff > 1) {
 	      recvStats.zmq_msg_drops += diff - 1;
-	      ntop->getTrace()->traceEvent(TRACE_INFO, "msg_id=%u, drops=%u", msg_id, recvStats.zmq_msg_drops);
+	      ntop->getTrace()->traceEvent(TRACE_INFO, "msg_id=%u (last=%u), drops=%u (+%u)", 
+                msg_id, last_msg_id, recvStats.zmq_msg_drops, diff-1);
 	    }
 	  }
 
@@ -221,14 +257,23 @@ void ZMQCollectorInterface::collect_flows() {
 	size = zmq_recv(items[subscriber_id].socket, payload, payload_len, 0);
 
 	if(size > 0 && (u_int32_t)size > payload_len)
-	  ntop->getTrace()->traceEvent(TRACE_WARNING, "ZMQ message truncated? [size: %u][payload_len: %u]", size, payload_len);
+	  ntop->getTrace()->traceEvent(TRACE_WARNING,
+				       "ZMQ message truncated? [size: %u][payload_len: %u]",
+				       size, payload_len);
 	else if(size > 0) {
 	  char *uncompressed = NULL;
 	  u_int uncompressed_len;
-	  
-	  payload[size] = '\0';
+          bool tlv_encoding = false;
+          bool compressed = false;
 
-	  if(payload[0] == 0 /* Compressed traffic */) {
+	  payload[size] = '\0';
+	  
+          if(publisher_version == ZMQ_MSG_VERSION_TLV)
+            tlv_encoding = true;
+          else if(payload[0] == 0)
+            compressed = true;
+
+	  if(compressed /* Compressed traffic */) {
 #ifdef HAVE_ZLIB
 	    int err;
 	    uLongf uLen;
@@ -249,23 +294,31 @@ void ZMQCollectorInterface::collect_flows() {
 
 	    continue;
 #endif
-	  } else
+          } else if(tlv_encoding /* TLV encoding */) {
+            // ntop->getTrace()->traceEvent(TRACE_NORMAL, "TLV message over ZMQ");
 	    uncompressed = payload, uncompressed_len = size;
+	  } else /* JSON string */
+	    uncompressed = payload, uncompressed_len = size;          
 
 	  if(ntop->getPrefs()->get_zmq_encryption_pwd())
 	    Utils::xor_encdec((u_char*)uncompressed, uncompressed_len, (u_char*)ntop->getPrefs()->get_zmq_encryption_pwd());
 
-	  // ntop->getTrace()->traceEvent(TRACE_NORMAL, "[url: %s]", h.url);
-	  // ntop->getTrace()->traceEvent(TRACE_NORMAL, "%s [msg_id=%u][url: %s]", uncompressed, msg_id, h.url);
+	  // ntop->getTrace()->traceEvent(TRACE_NORMAL, "[url: %s]", h->url);
+	  // ntop->getTrace()->traceEvent(TRACE_NORMAL, "%s [msg_id=%u][url: %s]", uncompressed, msg_id, h->url);
 
-          switch(h.url[0]) {
+          switch(h->url[0]) {
           case 'e': /* event */
             recvStats.num_events++;
             parseEvent(uncompressed, uncompressed_len, subscriber_id, this);
             break;
 
           case 'f': /* flow */
-            recvStats.num_flows += parseFlow(uncompressed, uncompressed_len, subscriber_id, this);
+            if(tlv_encoding) 
+              recvStats.num_flows += parseTLVFlow(uncompressed, uncompressed_len, subscriber_id, this);
+            else {
+	      uncompressed[uncompressed_len] = '\0';
+              recvStats.num_flows += parseJSONFlow(uncompressed, uncompressed_len, subscriber_id, this);
+	    }
             break;
 
           case 'c': /* counter */
@@ -285,10 +338,10 @@ void ZMQCollectorInterface::collect_flows() {
 
           }
 
-	  /* ntop->getTrace()->traceEvent(TRACE_INFO, "[%s] %s", h.url, uncompressed); */
+	  /* ntop->getTrace()->traceEvent(TRACE_INFO, "[%s] %s", h->url, uncompressed); */
 
 #ifdef HAVE_ZLIB
-	  if(payload[0] == 0 /* only if the traffic was actually compressed */)
+	  if(compressed /* only if the traffic was actually compressed */)
 	    if(uncompressed) free(uncompressed);
 #endif
 	} /* size > 0 */
@@ -297,6 +350,8 @@ void ZMQCollectorInterface::collect_flows() {
   }
 
   ntop->getTrace()->traceEvent(TRACE_NORMAL, "Flow collection is over.");
+
+  free(payload);
 }
 
 /* **************************************************** */
@@ -317,17 +372,6 @@ void ZMQCollectorInterface::startPacketPolling() {
   pthread_create(&pollLoop, NULL, packetPollLoop, (void*)this);
   pollLoopCreated = true;
   NetworkInterface::startPacketPolling();
-}
-
-/* **************************************************** */
-
-void ZMQCollectorInterface::shutdown() {
-  void *res;
-
-  if(running) {
-    NetworkInterface::shutdown();
-    pthread_join(pollLoop, &res);
-  }
 }
 
 /* **************************************************** */

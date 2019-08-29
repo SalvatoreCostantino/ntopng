@@ -37,7 +37,7 @@
  */
 
 class LuaEngine {
- private:
+ protected:
   lua_State *L; /**< The LuaEngine state.*/
   
   void lua_register_classes(lua_State *L, bool http_mode);
@@ -57,6 +57,14 @@ class LuaEngine {
    */
   ~LuaEngine();
 
+  /* Set Hosts and Networks into the Lua context */
+  void setHost(Host* h);
+  void setNetwork(NetworkStats* ns);
+
+  inline Host* getHost()     { return(getLuaVMContext(L)->host); }
+  inline NetworkInterface* getNetworkInterface() { return(getLuaVMContext(L)->iface); }
+  NetworkStats* getNetwork() { return(getLuaVMContext(L)->network); }
+
   /**
    * @brief Run a Lua script.
    * @details Run a script from within ntopng. No HTTP GUI.
@@ -67,6 +75,9 @@ class LuaEngine {
    */
   int run_script(char *script_path, NetworkInterface *iface);
 
+  /* Same as run_script() but the script is just loaded and NOT executed */
+  int load_script(char *script_path, NetworkInterface *iface);
+  
   /**
    * @brief Handling of request info of script.
    * @details Read from the request the parameters and put the GET parameters and the _SESSION parameters into the environment. 
@@ -92,6 +103,8 @@ class LuaEngine {
   static void luaRegister(lua_State *L, const ntop_class_reg *reg);
   static void luaRegisterInternalRegs(lua_State *L);
 
+  inline lua_State* getState() const { return(L); }
+  
   void setInterface(const char * user, char * const ifname, u_int16_t ifname_len, bool * const is_allowed) const;
 };
 
@@ -151,5 +164,7 @@ extern void lua_push_bool_table_entry(lua_State *L, const char *key, bool value)
 extern void lua_push_float_table_entry(lua_State *L, const char *key, float value);
 
 int ntop_lua_check(lua_State* vm, const char* func, int pos, int expected_type);
+
+void get_host_vlan_info(char* lua_ip, char** host_ip, u_int16_t* vlan_id, char *buf, u_int buf_len);
 
 #endif /* _LUA_H_ */

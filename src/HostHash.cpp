@@ -30,7 +30,7 @@ HostHash::HostHash(NetworkInterface *_iface, u_int _num_hashes, u_int _max_hash_
 
 /* ************************************ */
 
-Host* HostHash::get(u_int16_t vlanId, IpAddress *key) {
+Host* HostHash::get(u_int16_t vlanId, IpAddress *key, bool is_inline_call) {
   u_int32_t hash = (key->key() % num_hashes);
 
   if(table[hash] == NULL) {
@@ -38,12 +38,13 @@ Host* HostHash::get(u_int16_t vlanId, IpAddress *key) {
   } else {
     Host *head;
 
-    locks[hash]->lock(__FILE__, __LINE__);
+    if(!is_inline_call)
+      locks[hash]->lock(__FILE__, __LINE__);
+
     head = (Host*)table[hash];
     
     while(head != NULL) {      
       if((!head->idle())
-	 && (!head->is_ready_to_be_purged())
 	 && (head->get_vlan_id() == vlanId)
 	 && (head->get_ip() != NULL)
 	 && (head->get_ip()->compare(key) == 0))
@@ -51,7 +52,9 @@ Host* HostHash::get(u_int16_t vlanId, IpAddress *key) {
       else
 	head = (Host*)head->next();
     }
-    locks[hash]->unlock(__FILE__, __LINE__);
+
+    if(!is_inline_call)
+      locks[hash]->unlock(__FILE__, __LINE__);
 
     return(head);
   }

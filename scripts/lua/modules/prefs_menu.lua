@@ -11,12 +11,15 @@ local hasRadius = ntop.hasRadiusSupport()
 local hasNindex = hasNindexSupport()
 local hasLdap = ntop.hasLdapSupport()
 local max_nindex_retention = 0
+local nindex_utils = nil
 
 if ntop.isPro() then
   package.path = dirs.installdir .. "/scripts/lua/pro/modules/?.lua;" .. package.path
-  local nindex_utils = require("nindex_utils")
 
-  _, max_nindex_retention = nindex_utils.getRetention()
+  if hasNindexSupport() then
+     nindex_utils = require("nindex_utils")
+     _, max_nindex_retention = nindex_utils.getRetention()
+  end
 end
 
 -- This table is used both to control access to the preferences and to filter preferences results
@@ -173,6 +176,10 @@ local menu_subpages = {
     }, toggle_country_rrds = {
       title       = i18n("prefs.toggle_country_rrds_title"),
       description = i18n("prefs.toggle_country_rrds_description"),
+    }, toggle_ndpi_flows_rrds = {
+      title       = i18n("prefs.toggle_ndpi_flows_rrds_title"),
+      description = i18n("prefs.toggle_ndpi_flows_rrds_description"),
+      pro_only    = true,
     }, toggle_tcp_flags_rrds = {
       title       = i18n("prefs.toggle_tcp_flags_rrds_title"),
       description = i18n("prefs.toggle_tcp_flags_rrds_description"),
@@ -238,6 +245,9 @@ local menu_subpages = {
     }, toggle_malware_probing = {
       title       = i18n("prefs.toggle_malware_probing_title"),
       description = i18n("prefs.toggle_malware_probing_description", {url=ntop.getHttpPrefix() .. "/lua/admin/edit_category_lists.lua"}),
+    }, toggle_potentially_dangerous_protocols_alerts = {
+      title       = i18n("prefs.toggle_potentially_dangerous_protocols_title"),
+      description = i18n("prefs.toggle_potentially_dangerous_protocols_description"),
     }, toggle_ids_alerts = {
       title       = i18n("prefs.toggle_ids_alert_title"),
       description = i18n("prefs.toggle_ids_alert_description"),

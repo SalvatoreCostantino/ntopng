@@ -30,36 +30,44 @@ class LocalHost : public Host, public SerializableElement {
   bool systemHost;
   time_t initialization_time;
   HostTimeseriesPoint *initial_ts_point;
-
+  std::map<u_int16_t,PortContactStats> udp_client_ports, tcp_client_ports, udp_server_ports, tcp_server_ports;
+  
   /* LocalHost data: update LocalHost::deleteHostData when adding new fields */
-  char *os;
-  bool drop_all_host_traffic;
+  OperatingSystem os;
+  char *os_detail;
+  bool drop_all_host_traffic; 
   /* END Host data: */
 
   void initialize();
   void freeLocalHostData();
   virtual void deleteHostData();
 
-  char * getMacBasedSerializationKey(char *redis_key, size_t size, char *mac_key);
-  char * getIpBasedSerializationKey(char *redis_key, size_t size);
+  char* getMacBasedSerializationKey(char *redis_key, size_t size, char *mac_key);
+  char* getIpBasedSerializationKey(char *redis_key, size_t size);
+  void  ports2Lua(lua_State* vm, bool proto_udp, bool as_client);
+  void  updateFlowPort(std::map<u_int16_t,PortContactStats> *c, Host *peer,
+		       u_int16_t port, u_int16_t l7_proto,
+		       const char *info, time_t when);
 
  public:
   LocalHost(NetworkInterface *_iface, Mac *_mac, u_int16_t _vlanId, IpAddress *_ip);
   LocalHost(NetworkInterface *_iface, char *ipAddress, u_int16_t _vlanId);
   virtual ~LocalHost();
 
-  virtual char * get_os(char * const buf, ssize_t buf_len);
+  virtual void set_hash_entry_state_idle();
   virtual int16_t get_local_network_id() const { return(local_network_id);  };
   virtual bool isLocalHost()  const            { return(true);              };
   virtual bool isSystemHost() const            { return(systemHost);        };
 
-  virtual NetworkStats* getNetworkStats(int16_t networkId){ return(iface->getNetworkStats(networkId));   };
+  virtual NetworkStats* getNetworkStats(int16_t networkId) {
+    return(iface->getNetworkStats(networkId));
+  };
   virtual u_int32_t getActiveHTTPHosts()             { return(getHTTPstats() ? getHTTPstats()->get_num_virtual_hosts() : 0); };
-  virtual char* get_os()                             { return(os ? os : (char*)"");                    };
   virtual HostStats* allocateStats()                 { return(new LocalHostStats(this));               };
 
   virtual bool dropAllTraffic()  { return(drop_all_host_traffic); };
-  virtual void inlineSetOS(const char * const _os);
+  virtual void inlineSetOSDetail(const char *_os_detail);
+  virtual const char* getOSDetail(char * const buf, ssize_t buf_len);
   virtual void updateHostTrafficPolicy(char *key);
 
   virtual void incICMP(u_int8_t icmp_type, u_int8_t icmp_code, bool sent, Host *peer) { stats->incICMP(icmp_type, icmp_code, sent, peer); };
@@ -82,6 +90,9 @@ class LocalHost : public Host, public SerializableElement {
   virtual void lua(lua_State* vm, AddressTree * ptree, bool host_details,
 		   bool verbose, bool returnHost, bool asListElement);
   virtual void tsLua(lua_State* vm);
+  void luaPortsDump(lua_State* vm);  
+  void setFlowPort(bool as_server, Host *peer, u_int8_t proto, u_int16_t port,
+		   u_int16_t l7_proto, const char *info, time_t when);
 };
 
 #endif /* _LOCAL_HOST_H_ */

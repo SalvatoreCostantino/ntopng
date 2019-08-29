@@ -7,6 +7,9 @@ local ts_utils = require "ts_utils_core"
 local format_utils = require "format_utils"
 require "ts_5min"
 
+-- Set to true to debug host timeseries points timestamps
+local enable_debug = false
+
 local ts_custom
 if ntop.exists(dirs.installdir .. "/scripts/lua/modules/timeseries/custom/ts_5min_custom.lua") then
    package.path = dirs.installdir .. "/scripts/lua/modules/timeseries/custom/?.lua;" .. package.path
@@ -181,6 +184,7 @@ function ts_dump.getConfig()
   config.country_rrd_creation = ntop.getPref("ntopng.prefs.country_rrd_creation")
   config.vlan_rrd_creation = ntop.getPref("ntopng.prefs.vlan_rrd_creation")
   config.tcp_retr_ooo_lost_rrd_creation = ntop.getPref("ntopng.prefs.tcp_retr_ooo_lost_rrd_creation")
+  config.ndpi_flows_timeseries_creation = ntop.getPref("ntopng.prefs.ndpi_flows_rrd_creation")
 
   -- ########################################################
   -- Populate some defaults
@@ -220,7 +224,7 @@ function ts_dump.host_update_stats_rrds(when, hostname, host, ifstats, verbose)
          when, verbose)
 
   -- Number of anomalous flows
-  ts_utils.append("host:anomalous_flows", {ifid = ifstats.id, host = hostname,
+  ts_utils.append("host:misbehaving_flows", {ifid = ifstats.id, host = hostname,
 					   flows_as_client = host["anomalous_flows.as_client"],
 					   flows_as_server = host["anomalous_flows.as_server"]},
 		  when, verbose)
@@ -244,29 +248,26 @@ function ts_dump.host_update_stats_rrds(when, hostname, host, ifstats, verbose)
             replies_error_packets =host["dns"]["rcvd"]["num_replies_error"]},
       when, verbose)
 
-  if (host["ICMPv4"] ~= nil) then
-    if (host["ICMPv4"]["0,0"] ~= nil) then
-      --Number of ICMP ECHO reply packets
-      ts_utils.append("host:echo_reply_packets", {ifid = ifstats.id, host = hostname,
-              packets_sent =  host["ICMPv4"]["0,0"]["sent"],
-              packets_rcvd =  host["ICMPv4"]["0,0"]["rcvd"]},
-          when, verbose)
-    end
-    if (host["ICMPv4"]["8,0"] ~= nil) then
-      --Number of ICMP ECHO request packets
-      ts_utils.append("host:echo_packets", {ifid = ifstats.id, host = hostname,
-              packets_sent =  host["ICMPv4"]["8,0"]["sent"],
-              packets_rcvd =  host["ICMPv4"]["8,0"]["rcvd"]},
-          when, verbose)
-    end
-  end
-
   -- Number of dns packets rcvd
   ts_utils.append("host:dns_qry_rcvd_rsp_sent", {ifid = ifstats.id, host = hostname,
             queries_packets = host["dns"]["rcvd"]["num_queries"],
             replies_ok_packets = host["dns"]["sent"]["num_replies_ok"],
             replies_error_packets = host["dns"]["sent"]["num_replies_error"]},
       when, verbose)
+
+  if(host["icmp.echo_pkts_sent"] ~= nil) then
+    ts_utils.append("host:echo_packets", {ifid = ifstats.id, host = hostname,
+      packets_sent = host["icmp.echo_pkts_sent"],
+      packets_rcvd = host["icmp.echo_pkts_rcvd"]},
+      when, verbose)
+  end
+
+  if(host["icmp.echo_reply_pkts_sent"] ~= nil) then
+    ts_utils.append("host:echo_reply_packets", {ifid = ifstats.id, host = hostname,
+      packets_sent = host["icmp.echo_reply_pkts_sent"],
+      packets_rcvd = host["icmp.echo_reply_pkts_rcvd"]},
+      when, verbose)
+  end
   
   -- Number of udp packets
   ts_utils.append("host:udp_pkts", {ifid = ifstats.id, host = hostname,
@@ -299,6 +300,16 @@ function ts_dump.host_update_stats_rrds(when, hostname, host, ifstats, verbose)
 					   alerts = host["total_alerts"]},
 		  when, verbose)
 
+  -- Total number of flow alerts
+  ts_utils.append("host:total_flow_alerts", {ifid = ifstats.id, host = hostname,
+					   alerts = host["num_flow_alerts"]},
+		  when, verbose)
+
+  -- Engaged alerts
+  ts_utils.append("host:engaged_alerts", {ifid = ifstats.id, host = hostname,
+					   alerts = host["engaged_alerts"]},
+		  when, verbose)
+
   -- Contacts
   ts_utils.append("host:contacts", {ifid=ifstats.id, host=hostname,
             num_as_client=host["contacts.as_client"], num_as_server=host["contacts.as_server"]}, when, verbose)
@@ -326,15 +337,23 @@ function ts_dump.host_update_stats_rrds(when, hostname, host, ifstats, verbose)
   end
 end
 
-function ts_dump.host_update_ndpi_rrds(when, hostname, host, ifstats, verbose)
+function ts_dump.host_update_ndpi_rrds(when, hostname, host, ifstats, verbose, config)
   -- nDPI Protocols
   for k, value in pairs(host["ndpi"] or {}) do
     local sep = string.find(value, "|")
+    local sep2 = string.find(value, "|", sep+1)
     local bytes_sent = string.sub(value, 1, sep-1)
-    local bytes_rcvd = string.sub(value, sep+1)
+    local bytes_rcvd = string.sub(value, sep+1, sep2-1)
 
     ts_utils.append("host:ndpi", {ifid=ifstats.id, host=hostname, protocol=k,
               bytes_sent=bytes_sent, bytes_rcvd=bytes_rcvd}, when, verbose)
+
+    if config.ndpi_flows_timeseries_creation == "1" then
+      local num_flows = string.sub(value, sep2+1)
+
+      ts_utils.append("host:ndpi_flows", {ifid=ifstats.id, host=hostname, protocol=k,
+              num_flows = num_flows}, when, verbose)
+    end
   end
 end
 
@@ -355,13 +374,17 @@ end
 function ts_dump.host_update_rrd(when, hostname, host, ifstats, verbose, config)
   -- Crunch additional stats for local hosts only
   if config.host_rrd_creation ~= "0" then
+    if enable_debug then
+      traceError(TRACE_NORMAL, TRACE_CONSOLE, "@".. when .." Going to update host " .. hostname)
+    end
+
     -- Traffic stats
     if(config.host_rrd_creation == "1") then
       ts_dump.host_update_stats_rrds(when, hostname, host, ifstats, verbose)
     end
 
     if(config.host_ndpi_timeseries_creation == "per_protocol" or config.host_ndpi_timeseries_creation == "both") then
-      ts_dump.host_update_ndpi_rrds(when, hostname, host, ifstats, verbose)
+      ts_dump.host_update_ndpi_rrds(when, hostname, host, ifstats, verbose, config)
     end
 
     if(config.host_ndpi_timeseries_creation == "per_category" or config.host_ndpi_timeseries_creation == "both") then
@@ -380,39 +403,44 @@ function ts_dump.run_5min_dump(_ifname, ifstats, config, when, time_threshold, s
   local min_instant = when - (when % 60) - 60
 
   -- alerts stuff
-  if are_alerts_enabled then
-    housekeepingAlertsMakeRoom(getInterfaceId(_ifname))
-    working_status = newAlertsWorkingStatus(ifstats, "5mins")
-
-    check_interface_alerts(ifstats.id, working_status)
-    check_networks_alerts(ifstats.id, working_status)
-    -- will scan the hosts alerts below
+  if(are_alerts_enabled) then
+    scanAlerts("5mins", ifstats)
   end
 
   local dump_tstart = os.time()
   local dumped_hosts = {}
 
   -- Save hosts stats (if enabled from the preferences)
-  if (is_rrd_creation_enabled and (config.host_rrd_creation ~= "0")) or are_alerts_enabled then
+  if (is_rrd_creation_enabled and (config.host_rrd_creation ~= "0")) then
     local in_time = callback_utils.foreachLocalRRDHost(_ifname, time_threshold, is_rrd_creation_enabled, function (hostname, host_ts)
       local host_key = host_ts.tskey
 
-      if are_alerts_enabled then
-        -- Check alerts first
-        check_host_alerts(ifstats.id, working_status, hostname)
-      end
-
       if(is_rrd_creation_enabled and (dumped_hosts[host_key] == nil)) then
+        local min_host_instant = min_instant
+
         if(host_ts.initial_point ~= nil) then
           -- Dump the first point
+          if enable_debug then
+            traceError(TRACE_NORMAL, TRACE_CONSOLE, "Dumping initial point for " .. host_key)
+          end
+
           ts_dump.host_update_rrd(host_ts.initial_point_time, host_key, host_ts.initial_point, ifstats, verbose, config)
+          min_host_instant = math.max(min_host_instant, host_ts.initial_point_time + 1)
         end
 
-        for _, host_point in ipairs(host_ts or {}) do
+        host_ts = host_ts or {}
+
+        if enable_debug then
+          traceError(TRACE_NORMAL, TRACE_CONSOLE, "Dumping ".. (#host_ts) .." points for " .. host_key)
+        end
+
+        for _, host_point in ipairs(host_ts) do
           local instant = host_point.instant
 
-          if instant >= min_instant then
+          if instant >= min_host_instant then
             ts_dump.host_update_rrd(instant, host_key, host_point, ifstats, verbose, config)
+          elseif enable_debug then
+            traceError(TRACE_NORMAL, TRACE_CONSOLE, "Skipping point: instant=" .. instant .. " but min_host_instant=" .. min_host_instant)
           end
         end
 
@@ -422,11 +450,6 @@ function ts_dump.run_5min_dump(_ifname, ifstats, config, when, time_threshold, s
 
       num_processed_hosts = num_processed_hosts + 1
     end)
-
-    if working_status ~= nil then
-      -- NOTE: must always finalize current working_status before returning
-      finalizeAlertsWorkingStatus(working_status)
-    end
 
     if not in_time then
        traceError(TRACE_ERROR, TRACE_CONSOLE, "[".. _ifname .." ]" .. i18n("error_rrd_cannot_complete_dump"))
@@ -484,7 +507,7 @@ function ts_dump.run_5min_dump(_ifname, ifstats, config, when, time_threshold, s
     end
 
     -- Save Host Pools stats every 5 minutes
-    if((ntop.isPro()) and (tostring(config.host_pools_rrd_creation) == "1") and (not ifstats.isView)) then
+    if((ntop.isPro()) and (tostring(config.host_pools_rrd_creation) == "1")) then
       host_pools_utils.updateRRDs(ifstats.id, true --[[ also dump nDPI data ]], verbose)
     end
   end

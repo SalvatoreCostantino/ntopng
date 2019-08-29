@@ -45,8 +45,9 @@ local outIfIdx    = _GET["outIfIdx"]
 local asn         = _GET["asn"]
 
 local vhost       = _GET["vhost"]
-local flowhosts_type  = _GET["flowhosts_type"]
-local ipversion       = _GET["version"]
+local flowhosts_type = _GET["flowhosts_type"]
+local ipversion    = _GET["version"]
+local l4proto      = _GET["l4proto"]
 local traffic_type = _GET["traffic_type"]
 local flow_status = _GET["flow_status"]
 local tcp_state   = _GET["tcp_flow_state"]
@@ -169,6 +170,10 @@ if not isEmptyString(ipversion) then
    pageinfo["ipVersion"] = tonumber(ipversion)
 end
 
+if not isEmptyString(l4proto) then
+   pageinfo["L4Protocol"] = tonumber(l4proto)
+end
+
 if not isEmptyString(vlan) then
    pageinfo["vlanIdFilter"] = tonumber(vlan)
 end
@@ -272,6 +277,7 @@ for _key, value in ipairs(flows_stats) do -- pairsByValues(vals, funct) do
 
    local src_port, dst_port = '', ''
    local src_process, dst_process = '', ''
+   local src_container, dst_container = '', ''
 
    if(cli_name == nil) then cli_name = "???" end
    if(srv_name == nil) then srv_name = "???" end
@@ -287,7 +293,7 @@ for _key, value in ipairs(flows_stats) do -- pairsByValues(vals, funct) do
       srv_tooltip = srv_tooltip.."&#10;nw latency: "..string.format("%.3f", value["tcp.nw_latency.server"]).." ms"
    end
 
-   if(value["cli.allowed_host"]) then
+   if value["cli.allowed_host"] and not ifstats.isViewed then
       src_key="<A HREF='"..ntop.getHttpPrefix().."/lua/host_details.lua?" .. hostinfo2url(value,"cli").. "' data-toggle='tooltip' title='" ..cli_tooltip.. "' >".. shortenString(stripVlan(cli_name))
       if(value["cli.systemhost"] == true) then src_key = src_key .. "&nbsp;<i class='fa fa-flag'></i>" end
 
@@ -300,21 +306,14 @@ for _key, value in ipairs(flows_stats) do -- pairsByValues(vals, funct) do
       end
 
       --record["column_client_process"] = flowinfo2process(value["client_process"], hostinfo2url(value,"cli"))
-      src_process = flowinfo2process(value["client_process"], hostinfo2url(value,"cli"))
-
-      if value["client_container"] and value["client_container"].id then
-         record["column_client_container"] = '<a href="' .. ntop.getHttpPrefix() .. '/lua/flows_stats.lua?container=' .. value["client_container"].id .. '">' .. format_utils.formatContainer(value["client_container"]) .. '</a>'
-
-         if value["client_container"]["k8s.pod"] then
-            record["column_client_pod"] = '<a href="' .. ntop.getHttpPrefix() .. '/lua/containers_stats.lua?pod=' .. value["client_container"]["k8s.pod"] .. '">' .. shortenString(value["client_container"]["k8s.pod"]) .. '</a>'
-         end
-      end
+      src_process   = flowinfo2process(value["client_process"], hostinfo2url(value,"cli"))
+      src_container = flowinfo2container(value["client_container"])
    else
       src_key = shortenString(stripVlan(cli_name))
-      src_port=":"..value["cli.port"]
+      src_port=value["cli.port"]
    end
 
-   if(value["srv.allowed_host"]) then
+   if value["srv.allowed_host"] and not ifstats.isViewed then
       dst_key="<A HREF='"..ntop.getHttpPrefix().."/lua/host_details.lua?".. hostinfo2url(value,"srv").. "' data-toggle='tooltip' title='" ..srv_tooltip.. "' >".. shortenString(stripVlan(srv_name))
       if(value["srv.systemhost"] == true) then dst_key = dst_key .. "&nbsp;<i class='fa fa-flag'></i>" end
       dst_key = dst_key .. "</A>"
@@ -326,7 +325,8 @@ for _key, value in ipairs(flows_stats) do -- pairsByValues(vals, funct) do
       end
 
       --record["column_server_process"] = flowinfo2process(value["server_process"], hostinfo2url(value,"srv"))
-      dst_process = flowinfo2process(value["server_process"], hostinfo2url(value,"srv"))
+      dst_process   = flowinfo2process(value["server_process"], hostinfo2url(value,"srv"))
+      dst_container = flowinfo2container(value["server_container"])
 
       if value["server_container"] and value["server_container"].id then
          record["column_server_container"] = '<a href="' .. ntop.getHttpPrefix() .. '/lua/flows_stats.lua?container=' .. value["server_container"].id .. '">' .. format_utils.formatContainer(value["server_container"]) .. '</a>'
@@ -337,7 +337,7 @@ for _key, value in ipairs(flows_stats) do -- pairsByValues(vals, funct) do
       end
    else
       dst_key = shortenString(stripVlan(srv_name))
-      dst_port=":"..value["srv.port"]
+      dst_port=value["srv.port"]
    end
 
    if(value["client_tcp_info"] ~= nil) then
@@ -375,11 +375,10 @@ for _key, value in ipairs(flows_stats) do -- pairsByValues(vals, funct) do
       column_client = column_client..getFlag(info["country"])
    end
 
-   column_client = string.format("%s%s%s %s",
+   column_client = string.format("%s%s%s %s %s",
 				 column_client,
 				 ternary(src_port ~= '', ':', ''),
-				 src_port,
-             src_process)
+				 src_port, src_process, src_container)
    if(value["verdict.pass"] == false) then
      column_client = "<strike>"..column_client.."</strike>"
    end
@@ -401,11 +400,10 @@ for _key, value in ipairs(flows_stats) do -- pairsByValues(vals, funct) do
       column_server = column_server..getFlag(info["country"])
    end
 
-   column_server = string.format("%s%s%s %s",
+   column_server = string.format("%s%s%s %s %s",
 				 column_server,
 				 ternary(dst_port ~= '', ':', ''),
-				 dst_port,
-             dst_process)
+				 dst_port, dst_process, dst_container)
    if(value["verdict.pass"] == false) then
      column_server = "<strike>"..column_server.."</strike>"
    end
@@ -456,7 +454,10 @@ for _key, value in ipairs(flows_stats) do -- pairsByValues(vals, funct) do
       app = "<strike>"..app.."</strike>"
    end
 
-   record["column_ndpi"] = "<A HREF='".. ntop.getHttpPrefix().."/lua/hosts_stats.lua?protocol=" .. value["proto.ndpi_id"] .."'>"..app.." " .. formatBreed(value["proto.ndpi_breed"]) .."</A>"
+   record["column_ndpi"] = app -- can't set the hosts_stats hyperlink for viewed interfaces
+   if not ifstats.isViewed then
+      record["column_ndpi"] = "<A HREF='".. ntop.getHttpPrefix().."/lua/hosts_stats.lua?protocol=" .. value["proto.ndpi_id"] .."'>"..app.." " .. formatBreed(value["proto.ndpi_breed"]) .."</A>"
+   end
    record["column_duration"] = secondsToTime(value["duration"])
    record["column_bytes"] = bytesToSize(value["bytes"])..""
 

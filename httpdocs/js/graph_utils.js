@@ -10,9 +10,12 @@ function initLabelMaps(_schema_2_label, _data_2_label, _graph_i18n) {
   graph_i18n = _graph_i18n;
 };
 
-function getSerieLabel(schema, serie) {
+function getSerieLabel(schema, serie, visualization, serie_index) {
   var data_label = serie.label;
   var new_label = data_2_label[data_label];
+
+  if(visualization && visualization.metrics_labels && visualization.metrics_labels[serie_index])
+    return visualization.metrics_labels[serie_index];
 
   if((schema == "top:local_senders") || (schema == "top:local_receivers")) {
     if(serie.ext_label)
@@ -72,8 +75,26 @@ function getSerieLabel(schema, serie) {
 }
 
 // Value formatter
-function getValueFormatter(schema, metric_type, series) {
+function getValueFormatter(schema, metric_type, series, custom_formatter) {
   if(series && series.length && series[0].label) {
+    if(custom_formatter) {
+      var formatters = [];
+
+      if(typeof(custom_formatter) != "object")
+        custom_formatter = [custom_formatter];
+
+      for(var i=0; i<custom_formatter.length; i++) {
+        // translate function name to actual function
+        var fn = window[custom_formatter[i]];
+
+        if(typeof fn !== "function")
+          console.error("Cannot find custom value formatter \"" + custom_formatter + "\"");
+        formatters[i] = fn;
+      }
+
+      return(formatters);
+    }
+
     var label = series[0].label;
 
     if(label.contains("bytes")) {
@@ -90,7 +111,7 @@ function getValueFormatter(schema, metric_type, series) {
       return [as_counter ? fflows : formatValue, formatFlows, as_counter ? fflows : formatFlows];
     } else if(label.contains("millis")) {
       return [fmillis, fmillis];
-    } else if(label.contains("alerts")) {
+    } else if(label.contains("alerts") && (metric_type === "counter")) {
       return [falerts, falerts];
     } else if(label.contains("percent")) {
       return [fpercent, fpercent];
@@ -267,12 +288,12 @@ function fixTimeRange(chart, params, align_step, actual_step) {
 
     // align epoch end wrt params.limit
     params.epoch_end += Math.ceil(diff_epoch / params.limit) * params.limit - diff_epoch;
-
-    chart.xAxis.tickValues(buildTimeArray(params.epoch_begin, params.epoch_end, tick_step));
     chart.align = align;
-  }
-
-  chart.xAxis.tickFormat(function(d) { return d3.time.format(fmt)(new Date(d*1000)) });
+    chart.tick_step = tick_step;
+  } else
+    chart.tick_step = null;
+  
+  chart.x_fmt = fmt;
 }
 
 function findActualStep(raw_step, tstart) {
@@ -326,6 +347,16 @@ function hideQuerySlow() {
   $("#query-slow-alert").hide();
 }
 
+function chart_data_sum(series) {
+  return(series.reduce(function(acc, x) {
+    return(acc + x.values.reduce(
+      function(acc, pt) {
+        return(acc + pt[1] || 0);
+      }, 0)
+    )
+  }, 0));
+}
+
 // add a new updateStackedChart function
 function attachStackedChartCallback(chart, schema_name, chart_id, zoom_reset_id, params, step,
           metric_type, align_step, show_all_smooth, initial_range, ts_table_shown) {
@@ -368,11 +399,62 @@ function attachStackedChartCallback(chart, schema_name, chart_id, zoom_reset_id,
 
   var chart_colors_min = ["#7CC28F", "#FCD384", "#FD977B"];
 
+  /* The default number of y points */
+  var num_ticks_y1 = null;
+  var num_ticks_y2 = null;
+  var domain_y1 = null;
+  var domain_y2 = null;
+  var first_run = true;
+
   var update_chart_data = function(new_data) {
     /* reset chart data so that the next transition animation will be gracefull */
     d3_sel.datum([]).call(chart);
+    d3_sel.datum(new_data);
 
-    d3_sel.datum(new_data).transition().call(chart);
+    /* This additional refresh is needed to determine the yticks
+     * and domain, needed below. */
+    d3_sel.call(chart);
+
+    if(first_run) {
+      num_ticks_y1 = chart.yAxis1.ticks();
+      num_ticks_y2 = chart.yAxis2.ticks();
+      domain_y1 = chart.yDomain1();
+      domain_y2 = chart.yDomain2();
+      first_run = false;
+    }
+
+    if(metric_type === "gauge") {
+      var cur_domain_y1 = chart.yAxis1.scale().domain();
+      var cur_domain_y2 = chart.yAxis2.scale().domain();
+
+      cur_domain_y1 = cur_domain_y1[1] - cur_domain_y1[0];
+      cur_domain_y2 = cur_domain_y2[1] - cur_domain_y2[0];
+
+      /* If there are not enough points available, reduce the number of
+       * ticks to avoid repeated ticks with same integer value.
+       * Other solutions (documented in https://stackoverflow.com/questions/21075245/nvd3-prevent-repeated-values-on-y-axis)
+       * are not easily applicable in this case.
+       */
+      chart.yAxis1.ticks(Math.min(cur_domain_y1, num_ticks_y1));
+      chart.yAxis2.ticks(Math.min(cur_domain_y2, num_ticks_y2));
+    }
+
+    var y1_sum = chart_data_sum(new_data.filter(function(x) { return(x.yAxis == 1); }))
+    var y2_sum = chart_data_sum(new_data.filter(function(x) { return(x.yAxis == 2); }))
+
+    /* Fix negative ydomain values appearing when dataset is empty */
+    if(y1_sum == 0)
+      chart.yDomain1([0, 1]);
+    else
+      chart.yDomain1(domain_y1);
+
+    if(y2_sum == 0)
+      chart.yDomain2([0, 1]);
+    else
+      chart.yDomain2(domain_y2);
+
+    /* Refresh the chart */
+    d3_sel.transition().call(chart);
     nv.utils.windowResize(chart.update);
     spinner.remove();
   }
@@ -654,6 +736,11 @@ function attachStackedChartCallback(chart, schema_name, chart_id, zoom_reset_id,
         return;
       }
 
+      // Fix x axis
+      var tick_step = Math.ceil(chart.tick_step / data.step) * data.step;
+      chart.xAxis.tickValues(buildTimeArray(data.start, data.start + data.count * data.step, tick_step));
+      chart.xAxis.tickFormat(function(d) { return d3.time.format(chart.x_fmt)(new Date(d*1000)) });
+
       // Adapt data
       var res = [];
       var series = data.series;
@@ -672,8 +759,10 @@ function attachStackedChartCallback(chart, schema_name, chart_id, zoom_reset_id,
           t += data.step;
         }
 
-        var label = getSerieLabel(schema_name, series[j]);
+        var visualization = chart.visualization_options || {};
+        var label = getSerieLabel(schema_name, series[j], visualization, j);
         var legend_key = schema_name + ":" + label;
+        chart.current_step = data.step;
 
         res.push({
           key: label,
@@ -820,15 +909,15 @@ function attachStackedChartCallback(chart, schema_name, chart_id, zoom_reset_id,
       }
 
       // get the value formatter
-      var formatter1 = getValueFormatter(schema_name, metric_type, series.filter(function(d) { return(d.axis != 2); }));
+      var formatter1 = getValueFormatter(schema_name, metric_type, series.filter(function(d) { return(d.axis != 2); }), visualization.value_formatter);
       var value_formatter = formatter1[0];
-      var tot_formatter = formatter1[1];
+      var tot_formatter = formatter1[1] || value_formatter;
       var stats_formatter = formatter1[2] || value_formatter;
       chart.yAxis1.tickFormat(value_formatter);
       chart.yAxis1_formatter = value_formatter;
 
       var second_axis_series = series.filter(function(d) { return(d.axis == 2); });
-      var formatter2 = getValueFormatter(schema_name, metric_type, second_axis_series);
+      var formatter2 = getValueFormatter(schema_name, metric_type, second_axis_series, visualization.value_formatter);
       var value_formatter2 = formatter2[0];
       chart.yAxis2.tickFormat(value_formatter2);
       chart.yAxis2_formatter = value_formatter2;
@@ -863,9 +952,9 @@ function attachStackedChartCallback(chart, schema_name, chart_id, zoom_reset_id,
           total_cell.show().find("span").html(tot_formatter(stats.total));
         if(stats.average || average_cell.is(':visible'))
           average_cell.show().find("span").html(stats_formatter(stats.average));
-        if(stats.min_val || min_cell.is(':visible'))
+        if((stats.min_val || min_cell.is(':visible')) && res[0].values[stats.min_val_idx])
           min_cell.show().find("span").html(stats_formatter(stats.min_val) + " @ " + (new Date(res[0].values[stats.min_val_idx][0] * 1000)).format(datetime_format));
-        if(stats.max_val || max_cell.is(':visible'))
+        if((stats.max_val || max_cell.is(':visible')) && res[0].values[stats.max_val_idx])
           max_cell.show().find("span").html(stats_formatter(stats.max_val) + " @ " + (new Date(res[0].values[stats.max_val_idx][0] * 1000)).format(datetime_format));
         if(stats["95th_percentile"] || perc_cell.is(':visible')) {
           perc_cell.show().find("span").html(stats_formatter(stats["95th_percentile"]));

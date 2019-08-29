@@ -7,9 +7,11 @@ local ts_utils = {}
 local ts_common = require "ts_common"
 
 ts_utils.metrics = ts_common.metrics
+ts_utils.aggregation = ts_common.aggregation
 ts_utils.schema = require "ts_schema"
 ts_utils.getLastError = ts_common.getLastError
 ts_utils.getLastErrorMessage = ts_common.getLastErrorMessage
+ts_utils.custom_schemas = {}
 
 -- This is used in realtime charts to avoid querying recent data not written to
 -- the database yet.
@@ -47,7 +49,9 @@ end
 -- ##############################################
 
 function ts_utils.hasHighResolutionTs()
-  return (ntop.getPref("ntopng.prefs.timeseries_driver") == "influxdb")
+   local driver_name = ntop.getPref("ntopng.prefs.timeseries_driver")
+   
+   return((driver_name == "influxdb") or (driver_name == "prometheus"))
 end
 
 -- ##############################################
@@ -98,7 +102,16 @@ function ts_utils.loadSchemas()
   require("ts_hour")
 
   -- Possibly load more timeseries schemas
-  system_scripts.getAdditionalTimeseries()
+  local menu_entries = system_scripts.getAdditionalTimeseries()
+
+  -- Possibly load custom schemas
+  -- It is necessary to load them here in order for custom schemas to
+  -- be available in rest/ts.lua
+  for _, entry in pairs(menu_entries) do
+    if((entry.schema ~= nil) and (entry.custom_schema ~= nil)) then
+      ts_utils.custom_schemas[entry.schema] = entry.custom_schema
+    end
+  end
 
   if(ntop.exists(dirs.installdir .. "/scripts/lua/modules/timeseries/custom/ts_minute_custom.lua")) then
      require("ts_minute_custom")
@@ -135,6 +148,9 @@ function ts_utils.listActiveDrivers()
     local dirs = ntop.getDirs()
     local rrd_driver = require("rrd"):new({base_path = (dirs.workingdir .. "/rrd_new")})
     active_drivers[#active_drivers + 1] = rrd_driver
+  elseif driver == "prometheus" then
+     local prometheus_driver = require("prometheus"):new({})
+     active_drivers[#active_drivers + 1] = prometheus_driver
   elseif driver == "influxdb" then
     local auth_enabled = (ntop.getPref("ntopng.prefs.influx_auth_enabled") == "1")
 
@@ -159,7 +175,7 @@ end
 function ts_utils.getQueryDriver()
   local drivers = ts_utils.listActiveDrivers()
 
-  -- TODO: for now prefer the influx driver if present
+  -- NOTE: prefer the InfluxDB driver if available, RRD as fallback
   local driver = drivers[2] or drivers[1]
 
   return driver
@@ -270,12 +286,6 @@ function ts_utils.query(schema_name, tags, tstart, tend, options)
   if not schema then
     traceError(TRACE_ERROR, TRACE_CONSOLE, "Schema not found: " .. schema_name)
     return nil
-  end
-
-  -- TODO: temporary fix for "process:memory"
-  if schema_name == "process:memory" then
-    tags = table.clone(tags)
-    tags.ifid = nil
   end
 
   if not schema:verifyTags(tags) then
@@ -619,6 +629,7 @@ end
 --! @return nil on error, otherwise a table item_id -> result is returned. See ts_utils.listSeries() for details.
 function ts_utils.getBatchedListSeriesResult()
   local driver = ts_utils.getQueryDriver()
+  local result
 
   if not driver then
     return nil
@@ -626,7 +637,17 @@ function ts_utils.getBatchedListSeriesResult()
 
   ts_common.clearLastError()
 
-  local result = driver:listSeriesBatched(pending_listseries_batch)
+  if(driver.listSeriesBatched == nil) then
+    -- Do not batch, just call listSeries
+    result = {}
+
+    for key, item in pairs(pending_listseries_batch) do
+      result[key] = driver:listSeries(item.schema, item.filter_tags, item.wildcard_tags, item.start_time)
+    end
+  else
+    result = driver:listSeriesBatched(pending_listseries_batch)
+  end
+
   pending_listseries_batch = {}
 
   return result
@@ -724,7 +745,6 @@ end
 
 -- ##############################################
 
--- TODO make standard and document
 function ts_utils.queryMean(schema_name, tstart, tend, tags, options)
   if not isUserAccessAllowed(tags) then
     return nil
@@ -764,15 +784,15 @@ function ts_utils.setup()
   local setup_ok = ntop.getPref(SETUP_OK_KEY)
 
   if(ntop.getCache(SETUP_OK_KEY) ~= "1") then
-    if ts_utils.getQueryDriver():setup(ts_utils) then
-      -- success, update version
-      ntop.setCache(SETUP_OK_KEY, "1")
-      return true
-    end
-
-    return false
+     if ts_utils.getQueryDriver():setup(ts_utils) then
+	-- success, update version
+	ntop.setCache(SETUP_OK_KEY, "1")
+	return true
+     end
+     
+     return false
   end
-
+  
   return true
 end
 
@@ -785,6 +805,17 @@ function ts_utils.getPossiblyChangedSchemas()
   return {
     "host:contacts", -- split in "as_client" and "as_server"
     "host:ndpi_categories", --split in "bytes_sent" and "bytes_rcvd"
+    "monitored_host:rtt", -- aggregation_function -> max
+
+    -- Added missing ifid tag
+    "influxdb:storage_size",
+    "influxdb:exported_points",
+    "influxdb:dropped_points",
+    "influxdb:exports",
+    "influxdb:rtt",
+    "monitored_host:rtt",
+    "system:cpu_load",
+    "process:memory",
   }
 end
 

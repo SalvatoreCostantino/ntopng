@@ -30,7 +30,7 @@ class LocalHostStats: public HostStats {
   ICMPstats *icmp;
   FrequentStringItems *top_sites;
   time_t nextSitesUpdate;
-  map<Host*, u_int16_t> contacts_as_cli, contacts_as_srv;
+  std::map<Host*, u_int16_t> contacts_as_cli, contacts_as_srv;
 
   /* Written by NetworkInterface::periodicStatsUpdate thread */
   char *old_sites;
@@ -39,6 +39,10 @@ class LocalHostStats: public HostStats {
  public:
   LocalHostStats(Host *_host);
   virtual ~LocalHostStats();
+
+  inline DnsStats* getDNSStats() const    { return(dns);  }
+  inline HTTPstats* getHTTPStats() const  { return(http); }
+  inline ICMPstats* getICMPStats() const  { return(icmp); }
 
   virtual void incStats(time_t when, u_int8_t l4_proto, u_int ndpi_proto,
 		custom_app_t custom_app,

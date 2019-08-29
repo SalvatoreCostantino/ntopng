@@ -42,7 +42,7 @@ class Prefs {
   char **deferred_interfaces_to_register, *cli;
   char *http_binding_address1, *http_binding_address2;
   char *https_binding_address1, *https_binding_address2;
-  bool enable_client_x509_auth;
+  bool enable_client_x509_auth, reproduce_at_original_speed;
   char *lan_interface;
   Ntop *ntop;
   bool enable_dns_resolution, sniff_dns_responses,
@@ -72,6 +72,7 @@ class Prefs {
   bool enable_dns_alerts, enable_remote_to_remote_alerts;
   bool enable_mining_alerts;
   bool enable_dropped_flows_alerts, enable_device_protocols_alerts;
+  bool enable_potentially_dangerous_protocols_alerts;
   bool enable_syslog_alerts, external_notifications_enabled;
   bool enabled_malware_alerts, enabled_ids_alerts;
   bool enable_captive_portal, enable_informative_captive_portal, mac_based_captive_portal;
@@ -107,7 +108,7 @@ class Prefs {
   bool read_flows_from_mysql;
   InterfaceInfo *ifNames;
   char *local_networks;
-  bool local_networks_set, shutdown_when_done, simulate_vlans, ignore_vlans, ignore_macs, flush_flows_on_shutdown;
+  bool local_networks_set, shutdown_when_done, simulate_vlans, ignore_vlans, ignore_macs;
   char *data_dir, *install_dir, *docs_dir, *scripts_dir,
 	  *callbacks_dir, *prefs_dir, *pcap_dir, *export_endpoint;
   char *categorization_key;
@@ -151,6 +152,8 @@ class Prefs {
     }
   };
   bool getDefaultBoolPrefsValue(const char *pref_key, const bool default_value);
+  bool in_longlived_whitelist(const Flow * f) const;
+  bool in_elephant_whitelist(const Flow * f)  const;
 
  public:
   Prefs(Ntop *_ntop);
@@ -283,7 +286,6 @@ class Prefs {
   inline char* get_es_user()  { return(es_user);  };
   inline char* get_es_pwd()   { return(es_pwd);   };
   inline bool shutdownWhenDone() { return(shutdown_when_done); }
-  inline bool flushFlowsOnShutdown() { return(flush_flows_on_shutdown); }
   inline void set_promiscuous_mode(bool mode)  { use_promiscuous_mode = mode; };
   inline bool use_promiscuous()         { return(use_promiscuous_mode);  };
   inline char* get_mysql_host()         { return(mysql_host);            };
@@ -327,6 +329,7 @@ class Prefs {
   inline bool are_remote_to_remote_alerts_enabled()      { return(enable_remote_to_remote_alerts);      };
   inline bool are_dropped_flows_alerts_enabled()         { return(enable_dropped_flows_alerts);         };
   inline bool are_device_protocols_alerts_enabled()      { return(enable_device_protocols_alerts);      };
+  inline bool are_potentially_dangerous_protocols_alerts_enabled() { return(enable_potentially_dangerous_protocols_alerts); };
   inline bool are_alerts_syslog_enabled()                { return(enable_syslog_alerts);                };
   inline bool are_ext_alerts_notifications_enabled()     { return(external_notifications_enabled);      };
   inline bool are_malware_alerts_enabled()               { return(enabled_malware_alerts);              };
@@ -342,10 +345,10 @@ class Prefs {
   inline bool do_use_ports_to_determine_src_and_dst() const { return(use_ports_to_determine_src_and_dst); };
   inline bool are_device_protocol_policies_enabled()  const { return(device_protocol_policies_enabled);   };
 
-  inline bool isVLANTrunkModeEnabled()                   { return(enable_vlan_trunk_bridge);           }
-  inline bool isCaptivePortalEnabled()                   { return(enable_captive_portal && !enable_vlan_trunk_bridge); }
-  inline bool isInformativeCaptivePortalEnabled()        { return(enable_informative_captive_portal && !enable_vlan_trunk_bridge); }
-  inline bool isMacBasedCaptivePortal()                  { return(mac_based_captive_portal);  }
+  inline bool isVLANTrunkModeEnabled()                const { return(enable_vlan_trunk_bridge);           }
+  inline bool isCaptivePortalEnabled()                const { return(enable_captive_portal && !enable_vlan_trunk_bridge); }
+  inline bool isInformativeCaptivePortalEnabled()     const { return(enable_informative_captive_portal && !enable_vlan_trunk_bridge); }
+  inline bool isMacBasedCaptivePortal()               const { return(mac_based_captive_portal);  }
   const char * const getCaptivePortalUrl();
 
   inline u_int8_t  getDefaultl7Policy()                  { return(default_l7policy);  }
@@ -353,12 +356,15 @@ class Prefs {
   inline int32_t   get_max_num_alerts_per_entity()       { return(max_num_alerts_per_entity); };
   inline int32_t   get_max_num_flow_alerts()             { return(max_num_flow_alerts); };
 
-  inline u_int32_t get_max_num_packets_per_tiny_flow()       { return(max_num_packets_per_tiny_flow);       };
-  inline u_int32_t get_max_num_bytes_per_tiny_flow()         { return(max_num_bytes_per_tiny_flow);         };
-  inline u_int32_t get_max_num_aggregated_flows_per_export() { return(max_num_aggregated_flows_per_export); };
-  inline u_int64_t get_elephant_flow_remote_to_local_bytes() { return(elephant_flow_remote_to_local_bytes); };
-  inline u_int64_t get_elephant_flow_local_to_remote_bytes() { return(elephant_flow_local_to_remote_bytes); };
-  inline u_int32_t get_longlived_flow_duration()             { return(longlived_flow_duration); };
+  inline u_int32_t get_max_num_packets_per_tiny_flow()       const { return(max_num_packets_per_tiny_flow);       };
+  inline u_int32_t get_max_num_bytes_per_tiny_flow()         const { return(max_num_bytes_per_tiny_flow);         };
+  inline u_int32_t get_max_num_aggregated_flows_per_export() const { return(max_num_aggregated_flows_per_export); };
+  inline u_int64_t get_elephant_flow_remote_to_local_bytes() const { return(elephant_flow_remote_to_local_bytes); };
+  inline u_int64_t get_elephant_flow_local_to_remote_bytes() const { return(elephant_flow_local_to_remote_bytes); };
+  inline u_int32_t get_longlived_flow_duration()             const { return(longlived_flow_duration);             };
+
+  bool is_longlived_flow(const Flow *f) const;
+  bool is_elephant_flow(const Flow *f)   const;
 
   inline u_int64_t get_max_extracted_pcap_bytes() { return max_extracted_pcap_bytes; };
 
@@ -372,7 +378,9 @@ class Prefs {
   inline bool isGlobalDnsForgingEnabled()        { return(global_dns_forging_enabled);                  };
   inline u_int8_t getNumTsSlots()                { return(num_ts_slots);                                };
   inline u_int8_t getNumTsSteps()                { return(ts_num_steps);                                };
-
+  inline bool     reproduceOriginalSpeed()       { return(reproduce_at_original_speed);                 };
+  inline void     doReproduceOriginalSpeed()     { reproduce_at_original_speed = true;                  };
+  
   void validate();
 };
 

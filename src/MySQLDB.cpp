@@ -615,14 +615,14 @@ int MySQLDB::flow2InsertValues(Flow *f, char *json,
   first_seen = f->get_partial_first_seen();
   last_seen = f->get_partial_last_seen();
 
-  if(f->get_cli_host()->get_ip()->isIPv4()) {
+  if(f->get_cli_ip_addr()->isIPv4()) {
     len = snprintf(values_buf, values_buf_len,
 		   MYSQL_INSERT_VALUES_V4,
 		   f->get_vlan_id(),
 		   f->get_detected_protocol().app_protocol,
-		   htonl(f->get_cli_host()->get_ip()->get_ipv4()),
+		   htonl(f->get_cli_ip_addr()->get_ipv4()),
 		   f->get_cli_port(),
-		   htonl(f->get_srv_host()->get_ip()->get_ipv4()),
+		   htonl(f->get_srv_ip_addr()->get_ipv4()),
 		   f->get_srv_port(),
 		   f->get_protocol(),
 		   bytes_cli2srv, bytes_srv2cli,
@@ -640,9 +640,9 @@ int MySQLDB::flow2InsertValues(Flow *f, char *json,
 		   MYSQL_INSERT_VALUES_V6,
 		   f->get_vlan_id(),
 		   f->get_detected_protocol().app_protocol,
-		   f->get_cli_host()->get_ip()->print(cli_str, sizeof(cli_str)),
+		   f->get_cli_ip_addr()->print(cli_str, sizeof(cli_str)),
 		   f->get_cli_port(),
-		   f->get_srv_host()->get_ip()->print(srv_str, sizeof(srv_str)),
+		   f->get_srv_ip_addr()->print(srv_str, sizeof(srv_str)),
 		   f->get_srv_port(),
 		   f->get_protocol(),
 		   bytes_cli2srv, bytes_srv2cli,
@@ -670,6 +670,13 @@ int MySQLDB::flow2InsertValues(Flow *f, char *json,
 void MySQLDB::try_exec_sql_query(MYSQL *conn, char *sql) {
   int rc;
 
+  if (!db_operational) {
+    if(!connectToDB(conn, true)) {
+      _usleep(100);
+      return;
+    }
+  }
+
   if (strlen(sql) >= CONST_MAX_SQL_QUERY_LEN - 1) {
     ntop->getTrace()->traceEvent(TRACE_WARNING, "Tried to execute a query longer than %u. Skipping.",
       CONST_MAX_SQL_QUERY_LEN - 2);
@@ -690,10 +697,10 @@ void MySQLDB::try_exec_sql_query(MYSQL *conn, char *sql) {
 bool MySQLDB::dumpFlow(time_t when, Flow *f, char *json) {
   char sql[CONST_MAX_SQL_QUERY_LEN];
 
-  if((f->get_cli_host() == NULL) || (f->get_srv_host() == NULL) || !MySQLDB::db_created)
+  if((f->get_cli_ip_addr() == NULL) || (f->get_srv_ip_addr() == NULL) || !MySQLDB::db_created)
     return(false);
 
-  if(f->get_cli_host()->get_ip()->isIPv4())
+  if(f->get_cli_ip_addr()->isIPv4())
     snprintf(sql, sizeof(sql), "INSERT INTO `%sv4` " MYSQL_INSERT_FIELDS " VALUES ",
 	     ntop->getPrefs()->get_mysql_tablename());
   else
@@ -743,6 +750,9 @@ void MySQLDB::disconnectFromDB(MYSQL *conn) {
 static MYSQL *mysql_try_connect(MYSQL *conn, const char *dbname) {
   MYSQL *rc;
   unsigned long flags = CLIENT_COMPRESS;
+
+  if(!ntop->getPrefs()->get_mysql_host())
+    return(NULL);
 
   if(ntop->getPrefs()->get_mysql_host()[0] == '/') /* Use socketD */
     rc = mysql_real_connect(conn,
@@ -819,7 +829,7 @@ bool MySQLDB::connectToDB(MYSQL *conn, bool select_db) {
   if(mysql_init(conn) == NULL) {
     ntop->getTrace()->traceEvent(TRACE_ERROR, "Failed to initialize MySQL connection");
     m.unlock(__FILE__, __LINE__);
-    return(false);
+    return(db_operational);
   }
 
   rc = mysql_try_connect(conn, dbname);
@@ -832,7 +842,7 @@ bool MySQLDB::connectToDB(MYSQL *conn, bool select_db) {
                  ntop->getPrefs()->get_mysql_port());
 
     m.unlock(__FILE__, __LINE__);
-    return(false);
+    return(db_operational);
   }
 
   db_operational = true;
@@ -844,7 +854,7 @@ bool MySQLDB::connectToDB(MYSQL *conn, bool select_db) {
 			       iface->get_name());
 
   m.unlock(__FILE__, __LINE__);
-  return(true);
+  return(db_operational);
 }
 
 /* ******************************************* */

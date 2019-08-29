@@ -127,8 +127,15 @@ end
 
 if (isAdministrator()) then
    if (page == "config") and (not table.empty(_POST)) then
+      local custom_name = _POST["custom_name"]
+
+      if starts(custom_name, "tcp:__") then
+        -- Was mangled by sanitization
+        custom_name = "tcp://" .. string.sub(custom_name, 7)
+      end
+
       -- TODO move keys to new schema: replace ifstats.name with ifid
-      ntop.setCache('ntopng.prefs.'..ifstats.name..'.name',_POST["custom_name"])
+      ntop.setCache('ntopng.prefs.'..ifstats.name..'.name', custom_name)
 
       local ifspeed_cache = 'ntopng.prefs.'..ifstats.name..'.speed'
       if isEmptyString(_POST["ifSpeed"]) then
@@ -287,7 +294,7 @@ if has_traffic_recording_page then
    print("</a></li>")
 end
 
-if(isAdministrator() and areAlertsEnabled() and not ifstats.isView) then
+if isAdministrator() and areAlertsEnabled() then
    if(page == "alerts") then
       print("\n<li class=\"active\"><a href=\"#\">")
    elseif not is_pcap_dump then
@@ -300,7 +307,7 @@ if(isAdministrator() and areAlertsEnabled() and not ifstats.isView) then
    end
 end
 
-if ts_utils.getDriverName() == "rrd" then
+if not is_pcap_dump and ts_utils.getDriverName() == "rrd" then
    if ntop.isEnterprise() or ntop.isnEdge() then
       if(page == "traffic_report") then
          print("\n<li class=\"active\"><a href=\"#\"><i class='fa fa-file-text report-icon'></i></a></li>\n")
@@ -320,7 +327,7 @@ if(isAdministrator()) then
    end
 end
 
-if isAdministrator() and (not ifstats.isView) then
+if isAdministrator() then
    local num_pool_hosts = ifstats.num_members.num_hosts
    local label
 
@@ -522,6 +529,15 @@ if((page == "overview") or (page == nil)) then
       end
       print("<th width=250>"..i18n("speed").."</th><td colspan=2>" .. maxRateToString(speed*1000) .. "</td>")
       print("</tr>")
+   end
+
+   if((ifstats.num_alerts_engaged > 0) or (ifstats.num_dropped_alerts > 0)) then
+      print("<tr>")
+      local warning = "<i class='fa fa-warning fa-lg' style='color: #B94A48;'></i> "
+      print("<th>".. ternary(ifstats.num_alerts_engaged > 0, warning, "") ..i18n("show_alerts.engaged_alerts")..
+        "</th><td colspan=2  nowrap>".. formatValue(ifstats.num_alerts_engaged) .." <span id=engaged_alerts_trend></span></td>\n")
+      print("<th width=250>".. ternary(ifstats.num_dropped_alerts > 0, warning, "")..i18n("show_alerts.dropped_alerts")..
+        "</th><td colspan=2>" .. formatValue(ifstats.num_dropped_alerts) .. " <span id=dropped_alerts_trend></span></td>\n</td>")
    end
 
    label = i18n("pkts")
@@ -781,10 +797,10 @@ elseif((page == "networks")) then
       print("<tr><th width=250>"..i18n("broadcast_domain").."</th><td colspan=5>")
 
       local bcast_domains = {}
-      for bcast_domain, in_interface_range in pairsByKeys(ifstats.bcast_domains) do
+      for bcast_domain, domain_info in pairsByKeys(ifstats.bcast_domains) do
 	 bcast_domain = string.format("<a href='%s/lua/hosts_stats.lua?network_cidr=%s'>%s</a>", ntop.getHttpPrefix(), bcast_domain, bcast_domain)
 
-	 if in_interface_range == 0 and interface.isPacketInterface() and not is_pcap_dump and ntop.getPref(string.format("ntopng.prefs.ifid_%d.is_traffic_mirrored", ifId)) ~= "1" then
+	 if domain_info.ghost_network and interface.isPacketInterface() and not is_pcap_dump and ntop.getPref(string.format("ntopng.prefs.ifid_%d.is_traffic_mirrored", ifId)) ~= "1" then
 	    has_ghost_networks = true
 	    bcast_domain = bcast_domain..' '..ghost_icon
 	 end
@@ -1076,10 +1092,11 @@ elseif(page == "historical") then
       top_senders = "top:local_senders",
       top_receivers = "top:local_receivers",
       l4_protocols = "iface:l4protos",
-      show_historical = true,
+      show_historical = not ifstats.isViewed,
       timeseries = {
          {schema="iface:flows",                 label=i18n("graphs.active_flows")},
          {schema="iface:hosts",                 label=i18n("graphs.active_hosts")},
+         {schema="iface:engaged_alerts",        label=i18n("show_alerts.engaged_alerts")},
          {schema="custom:flows_vs_local_hosts", label=i18n("graphs.flows_vs_local_hosts"), check={"iface:flows", "iface:local_hosts"}, step=60},
          {schema="custom:flows_vs_traffic",     label=i18n("graphs.flows_vs_traffic"), check={"iface:flows", "iface:traffic"}, step=60},
          {schema="custom:memory_vs_flows_hosts", label=i18n("graphs.memory_vs_hosts_flows"), check={"process:memory", "iface:flows", "iface:hosts"}},
@@ -1105,8 +1122,9 @@ elseif(page == "historical") then
          --{schema="tcp_retr_ooo_lost",   label=i18n("graphs.tcp_retr_ooo_lost"), nedge_exclude=1},
          {schema="iface:tcp_retransmissions",   label=i18n("graphs.tcp_packets_retr"), nedge_exclude=1},
          {separator=1, label=i18n("tcp_flags")},
-         {schema="iface:tcp_syn",               label=i18n("graphs.tcp_syn_packets"), nedge_exclude=1},
-         {schema="iface:tcp_synack",            label=i18n("graphs.tcp_synack_packets"), nedge_exclude=1},
+         {schema="iface:tcp_syn",               label=i18n("graphs.tcp_syn_packets"), nedge_exclude=1, pro_skip=1},
+         {schema="iface:tcp_synack",            label=i18n("graphs.tcp_synack_packets"), nedge_exclude=1, pro_skip=1},
+         {schema="custom:iface_tcp_syn_vs_tcp_synack", label=i18n("graphs.tcp_syn_vs_tcp_synack"), metrics_labels = {"SYN", "SYN+ACK"}},
          {schema="iface:tcp_finack",            label=i18n("graphs.tcp_finack_packets"), nedge_exclude=1},
          {schema="iface:tcp_rst",               label=i18n("graphs.tcp_rst_packets"), nedge_exclude=1},
       }
@@ -1234,8 +1252,7 @@ elseif(page == "alerts") then
 
    drawAlertSourceSettings("interface", ifname_clean,
       i18n("show_alerts.iface_delete_config_btn", {iface=if_name}), "show_alerts.iface_delete_config_confirm",
-      "if_stats.lua", {ifid=ifid},
-      if_name)
+      "if_stats.lua", {ifid=ifid}, if_name, "interface")
 
 elseif(page == "config") then
    if(not isAdministrator()) then
@@ -1384,32 +1401,6 @@ elseif(page == "config") then
 	print[[
 	   </td>
 	</tr>]]
-
-   -- Alerts
-   local trigger_alerts = true
-   local trigger_alerts_checked = "checked"
-
-   if _SERVER["REQUEST_METHOD"] == "POST" then
-      if _POST["trigger_alerts"] ~= "1" then
-         trigger_alerts = false
-         trigger_alerts_checked = ""
-      end
-
-      ntop.setHashCache(get_alerts_suppressed_hash_name(getInterfaceId(ifname)), ifname_clean, tostring(trigger_alerts))
-   else
-      trigger_alerts = ntop.getHashCache(get_alerts_suppressed_hash_name(getInterfaceId(ifname)), ifname_clean)
-      if trigger_alerts == "false" then
-         trigger_alerts = false
-         trigger_alerts_checked = ""
-      end
-   end
-
-   print [[<tr>
-         <th>]] print(i18n("if_stats_config.trigger_interface_alerts")) print[[</th>
-         <td>
-            <input name="trigger_alerts" type="checkbox" value="1" ]] print(trigger_alerts_checked) print[[>
-         </td>
-      </tr>]]
 
    -- per-interface RRD generation
    local interface_rrd_creation = true
@@ -1742,10 +1733,6 @@ elseif(page == "snmp_bind") then
    });
 </script>]]
 elseif(page == "pools") then
-    if ifstats.isView then
-      error()
-    end
-
     dofile(dirs.installdir .. "/scripts/lua/admin/host_pools.lua")
 elseif(page == "dhcp") then
     dofile(dirs.installdir .. "/scripts/lua/admin/dhcp.lua")
@@ -1758,6 +1745,8 @@ print("var last_pkts  = " .. ifstats.stats.packets .. ";\n")
 print("var last_in_pkts  = " .. ifstats.eth.ingress.packets .. ";\n")
 print("var last_out_pkts  = " .. ifstats.eth.egress.packets .. ";\n")
 print("var last_drops = " .. ifstats.stats.drops .. ";\n")
+print("var last_engaged_alerts = " .. ifstats.num_alerts_engaged .. ";\n")
+print("var last_dropped_alerts = " .. ifstats.num_dropped_alerts .. ";\n")
 
 if(ifstats.zmqRecvStats ~= nil) then
    print("var last_zmq_time = 0;\n")
@@ -1884,6 +1873,11 @@ print [[
 	$('#drops_trend').html(get_trend(last_drops, rsp.drops));
 	last_pkts = rsp.packets;
 	last_drops = rsp.drops;
+
+  $('#engaged_alerts_trend').html(get_trend(last_engaged_alerts, rsp.engaged_alerts));
+  last_engaged_alerts = rsp.engaged_alerts;
+  $('#dropped_alerts_trend').html(get_trend(last_dropped_alerts, rsp.dropped_alerts));
+  last_dropped_alerts = rsp.dropped_alerts;
 
 	if((rsp.packets + rsp.drops) > 0) {
           pctg = ((rsp.drops*100)/(rsp.packets+rsp.drops)).toFixed(2);

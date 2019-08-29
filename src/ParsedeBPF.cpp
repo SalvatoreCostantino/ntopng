@@ -33,7 +33,8 @@ ParsedeBPF::ParsedeBPF() {
     memset(&container_info, 0, sizeof(container_info)),
     memset(&tcp_info, 0, sizeof(tcp_info));
 
-  free_memory = false;
+  server_info = false,
+    free_memory = false;
 }
 /* *************************************** */
 
@@ -67,6 +68,8 @@ ParsedeBPF::ParsedeBPF(const ParsedeBPF &pe) {
 
   if((tcp_info_set = pe.tcp_info_set))
     ;
+
+  server_info = pe.server_info;
 
   /* Free memory if allocation is from a 'copy' constructor */
   free_memory = true;
@@ -103,12 +106,40 @@ ParsedeBPF::~ParsedeBPF() {
 
 /* *************************************** */
 
-void ParsedeBPF::update(const ParsedeBPF * const pe) {
+bool ParsedeBPF::update(const ParsedeBPF * const pe) {
   /* Update tcp stats */
-  if(pe && pe->tcp_info_set) {
-    if(!tcp_info_set) tcp_info_set = true;
-    memcpy(&tcp_info, &pe->tcp_info, sizeof(tcp_info));
+  if(pe) {
+    if(container_info_set && pe->container_info_set
+       && container_info.id && pe->container_info.id
+       && strcmp(container_info.id, pe->container_info.id)) {
+      /* Clash! attempting to update info for a different container */
+      static bool warning_shown = false;
+
+      if(!warning_shown) {
+	ntop->getTrace()->traceEvent(TRACE_WARNING,
+				     "Attempting to update container %s using information from container %s.",
+				     container_info.id,
+				     pe->container_info.id);
+	warning_shown = true;
+      }
+
+      return false;
+    }
+
+    if(pe->tcp_info_set) {
+      if(!tcp_info_set) tcp_info_set = true;
+      memcpy(&tcp_info, &pe->tcp_info, sizeof(tcp_info));
+    }
   }
+
+  return true;
+}
+
+/* *************************************** */
+
+bool ParsedeBPF::isServerInfo() const {
+  return (event_type == ebpf_event_type_tcp_accept && !server_info)
+    || server_info;
 }
 
 /* *************************************** */

@@ -124,36 +124,7 @@ bool HTTPserver::authorized_localhost_user_login(const struct mg_connection *con
 /* ****************************************** */
 
 void HTTPserver::traceLogin(const char *user, bool authorized) {
-  NetworkInterface *ntop_interface;
-  AlertsManager *am;
-  const char *alert_json;
-  time_t when = time(NULL);
-  json_object *jobj;
-
-  ntop_interface = ntop->getSystemInterface();
-
-  if (ntop_interface == NULL)
-    return;
-
-  am = ntop_interface->getAlertsManager();
-
-  if (am == NULL)
-    return;
-
-  jobj = json_object_new_object();
-  if (jobj == NULL) return;
-
-  json_object_object_add(jobj, "scope",  json_object_new_string("login"));
-  json_object_object_add(jobj, "status", json_object_new_string(authorized ? "authorized" : "unauthorized"));
-
-  alert_json = json_object_to_json_string(jobj);
-
-  if (alert_json) {
-    am->storeGenericAlert(alert_entity_user, user, alert_user_activity, 
-      authorized ? alert_level_info : alert_level_warning, alert_json, when);
-  }
-
-  json_object_put(jobj);
+  ntop->getSystemInterface()->getAlertsQueue()->pushLoginTrace(user, authorized);
 }
 
 /* ****************************************** */
@@ -329,6 +300,7 @@ static int isWhitelistedURI(const char * const uri) {
 
 /* ****************************************** */
 
+#ifdef NO_SSL_DL /* see configure.seed */
 static bool ssl_client_x509_auth(const struct mg_connection * const conn, const struct mg_request_info * const request_info,
 				 char * const username, char * const group, bool * const localuser) {
   bool ret = false;
@@ -368,6 +340,7 @@ static bool ssl_client_x509_auth(const struct mg_connection * const conn, const 
 
   return ret;
 };
+#endif
 
 /* ****************************************** */
 
@@ -376,7 +349,7 @@ static bool ssl_client_x509_auth(const struct mg_connection * const conn, const 
 // which can also be "" or NTOP_NOLOGIN_USER .
 static int getAuthorizedUser(struct mg_connection *conn,
 			     const struct mg_request_info *request_info,
-			     char *username, char *group, bool *localuser) {
+			     char *username, ssize_t username_len, char *group, bool *localuser) {
   char session_id[NTOP_SESSION_ID_LENGTH];
   char key[64], val[128];
   char password[MAX_PASSWORD_LEN];
@@ -422,7 +395,7 @@ static int getAuthorizedUser(struct mg_connection *conn,
           char post_data[1024];
           int post_data_len = mg_read(conn, post_data, sizeof(post_data));
 
-          mg_get_var(post_data, post_data_len, "username", username, sizeof(username));
+          mg_get_var(post_data, post_data_len, "username", username, username_len);
           mg_get_var(post_data, post_data_len, "password", password, sizeof(password));
 
 	return(ntop->checkCaptiveUserPassword(username, password, group)
@@ -441,11 +414,13 @@ static int getAuthorizedUser(struct mg_connection *conn,
     return(1);
   }
 
+  #ifdef NO_SSL_DL
   /* Try to authenticate using client TLS/SSL certificate */
   if(request_info->is_ssl
      && ntop->getPrefs()->is_client_x509_auth_enabled()
      && ssl_client_x509_auth(conn, request_info, username, group, localuser))
     return(1);
+#endif
 
   /* Try to decode Authorization header if present */
   auth_header_p = mg_get_header(conn, "Authorization");
@@ -589,8 +564,9 @@ void HTTPserver::setCaptiveRedirectAddress(const char *addr) {
 /* ****************************************** */
 
 static char* make_referer(struct mg_connection *conn, char *buf, int bufsize) {
-  snprintf(buf, bufsize, "%s%s%s%s",
+  snprintf(buf, bufsize, "%s%s%s%s%s",
 	  mg_get_header(conn, "Host") ? mg_get_header(conn, "Host") : (char*)"",
+	  ntop->getPrefs()->get_http_prefix(),
 	  conn->request_info.uri,
 	  conn->request_info.query_string ? "?" : "",
 	  conn->request_info.query_string ? conn->request_info.query_string : "");
@@ -890,7 +866,7 @@ static int handle_lua_request(struct mg_connection *conn) {
 
   if(!isStaticResourceUrl(request_info, len)) {
     /* Only check authorized for non-static resources */
-    u_int8_t authorized = getAuthorizedUser(conn, request_info, username, group, &localuser);
+    u_int8_t authorized = getAuthorizedUser(conn, request_info, username, sizeof(username), group, &localuser);
 
     /* Make sure there are existing interfaces for username. */
     if(!ntop->checkUserInterfaces(username)) {
@@ -995,9 +971,9 @@ static int handle_lua_request(struct mg_connection *conn) {
 	  httpserver->get_scripts_dir());
       else
 	snprintf(path, sizeof(path), "%s%s%s",
-	       httpserver->get_scripts_dir(),
-	       Utils::getURL(len == 1 ? (char*)"/lua/index.lua" : request_info->uri, uri, sizeof(uri)),
-	       len > 1 && request_info->uri[len-1] == '/' ? (char*)"index.lua" : (char*)"");
+		 httpserver->get_scripts_dir(),
+		 Utils::getURL(len == 1 ? (char*)"/lua/index.lua" : request_info->uri, uri, sizeof(uri)),
+		 len > 1 && request_info->uri[len-1] == '/' ? (char*)"index.lua" : (char*)"");
 
       if(strlen(path) > 4 && strncmp(&path[strlen(path) - 4], ".lua", 4))
 	snprintf(&path[strlen(path)], sizeof(path) - strlen(path) - 1, "%s", (char*)".lua");
@@ -1138,6 +1114,7 @@ void HTTPserver::parseACL(char * const acl, u_int acl_len) {
 
 static unsigned char ssl_session_ctx_id[] = PACKAGE_NAME "-" NTOPNG_GIT_RELEASE;
 
+#ifdef NO_SSL_DL
 int handle_ssl_verify(int ok, X509_STORE_CTX *ctx) {
   X509 *cert;
   char buf[256];
@@ -1199,6 +1176,7 @@ int init_client_x509_auth(void *ctx) {
 
   return 1;
 };
+#endif
 
 /* ****************************************** */
 
@@ -1234,8 +1212,11 @@ HTTPserver::HTTPserver(const char *_docs_dir, const char *_scripts_dir) {
   memset(&callbacks, 0, sizeof(callbacks));
   callbacks.begin_request = handle_lua_request;
   callbacks.log_message = handle_http_message;
+
+#ifdef NO_SSL_DL
   if(ntop->getPrefs()->is_client_x509_auth_enabled())
     callbacks.init_ssl = init_client_x509_auth;
+#endif
 
   /* Randomize data */
   gettimeofday(&tv, NULL);

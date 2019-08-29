@@ -23,12 +23,23 @@
 
 /* *************************************** */
 
-NetworkStats::NetworkStats() {
+NetworkStats::NetworkStats(NetworkInterface *iface, u_int8_t _network_id) : AlertableEntity(iface, alert_entity_network), GenericTrafficElement() {
+  network_id = _network_id;
+  numHosts = 0;
+
+  setEntityValue(ntop->getLocalNetworkName(network_id));
 }
 
 /* *************************************** */
 
 void NetworkStats::lua(lua_State* vm) {
+  int hits;
+
+  lua_push_str_table_entry(vm, "network_key", ntop->getLocalNetworkName(network_id));
+  lua_push_uint64_table_entry(vm, "network_id", network_id);
+  lua_push_uint64_table_entry(vm, "num_hosts", getNumHosts());
+  lua_push_uint64_table_entry(vm, "engaged_alerts", getNumTriggeredAlerts());
+
   lua_push_uint64_table_entry(vm, "ingress", ingress.getNumBytes());
   lua_push_uint64_table_entry(vm, "egress", egress.getNumBytes());
   lua_push_uint64_table_entry(vm, "inner", inner.getNumBytes());
@@ -44,11 +55,18 @@ void NetworkStats::lua(lua_State* vm) {
   tcp_packet_stats_ingress.lua(vm, "tcpPacketStats.ingress");
   tcp_packet_stats_egress.lua(vm, "tcpPacketStats.egress");
   tcp_packet_stats_inner.lua(vm, "tcpPacketStats.inner");
+
+  if((hits = syn_flood_victim_alert.hits()))
+    lua_push_uint64_table_entry(vm, "hits.syn_flood_victim", hits);
+  if((hits = flow_flood_victim_alert.hits()))
+    lua_push_uint64_table_entry(vm, "hits.flow_flood_victim", hits);
+
+  GenericTrafficElement::lua(vm, true);
 }
 
 /* *************************************** */
 
-bool NetworkStats::serializeCheckpoint(json_object *my_object, DetailsLevel details_level) {
+bool NetworkStats::serialize(json_object *my_object) {
   json_object_object_add(my_object, "ingress", json_object_new_int64(ingress.getNumBytes()));
   json_object_object_add(my_object, "egress", json_object_new_int64(egress.getNumBytes()));
   json_object_object_add(my_object, "inner", json_object_new_int64(inner.getNumBytes()));
@@ -65,4 +83,31 @@ void NetworkStats::deserialize(json_object *o) {
   if(json_object_object_get_ex(o, "ingress", &obj)) ingress.incStats(now, 0, json_object_get_int(obj));
   if(json_object_object_get_ex(o, "egress", &obj)) egress.incStats(now, 0, json_object_get_int(obj));
   if(json_object_object_get_ex(o, "inner", &obj)) inner.incStats(now, 0, json_object_get_int(obj));
+}
+
+/* *************************************** */
+
+void NetworkStats::housekeepAlerts(ScriptPeriodicity p) {
+  switch(p) {
+  case minute_script:
+      flow_flood_victim_alert.reset_hits(),
+      syn_flood_victim_alert.reset_hits();
+    break;
+  default:
+    break;
+  }
+}
+
+/* *************************************** */
+
+void NetworkStats::updateSynAlertsCounter(time_t when, bool syn_sent) {
+  if(!syn_sent)
+    syn_flood_victim_alert.inc(when, this);
+}
+
+/* *************************************** */
+
+void NetworkStats::incNumFlows(time_t t, bool as_client) {
+  if(!as_client)
+    flow_flood_victim_alert.inc(t, this);
 }

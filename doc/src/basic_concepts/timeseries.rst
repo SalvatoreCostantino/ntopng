@@ -21,12 +21,12 @@ RRD Driver
 
 RRD is the default driver used. It writes data in the form of local `.rrd` files.
 With RRD the retention time for recorded data is fixed 1 year. RRD automatically
-aggregates old data to save space, reducing its resolution. Ence older data will be
+aggregates old data to save space, reducing its resolution. Hence older data will be
 aggregated together and finally be removed after 1 year (in fact RRD stands for *Round Robin*
 Database).
 
 Querying a single data series is efficient since the data is contained into a single file,
-while performing more conplex queries on multiple data series (e.g. when trying to determinate
+while performing more complex queries on multiple data series (e.g. when trying to determine
 the top protocols) can take some time. Moreover RRD has shown some limitations when writing
 a large volume of data, usually leading to gaps in the timeseries data points. With a large
 volume of data, the use of InfluxDB is suggested.
@@ -36,7 +36,7 @@ InfluxDB Driver
 
 ntopng supports writing and fetching timeseries data from an InfluxDB server.
 Since database communication happens via the network, the server can also be located
-into an external host.
+on an external host.
 
 .. note::
 
@@ -76,6 +76,56 @@ get more detailed historical data. This can be configured from the
   It is possible to review the current InfluxDB storage size used by ntopng from the
   "Runtime Status" page.
 
+InfluxDB status can be monitored from the System menu, entry "InfluxDB".
+
+.. figure:: ../img/basic_concepts_influxdb_status.png
+  :align: center
+  :alt: InfluxDB Status
+
+  InfluxDB Status
+
+The InfluxDB status home page shows a series of measures useful to
+understand the current health of InfluxDB and export status. The
+"Health" badge can be "green", "yellow" or "red", depending on the
+current export status:
+
+ - A "green" badge means that the export is working properly;
+ - A "yellow" badge means there are issues with the export (for
+   example ntopng is not able to reach InfluxDB) but such errors are
+   recoverable and no data is lost;
+ - A "red" badge means there are issues with the export that are
+   non-recoverable and this led to the loss of data points.
+
+It is important to note that the "Health" represent a current
+picture, for past issues one should browse the "Alerts" page.
+
+The other metrics shown in the status page have the following meaning:
+
+ - "Storage Utilization" indicates the disk space taken by the
+   InfluxDB database which is being populated by ntopng. The number
+   takes into account all the shards, in case of a distributed setup.
+ - "RAM" is an estimation of the amount of memory which is taken by
+   the InfluxDB process.
+ - "Total Exports" is a counter of the number of times ntopng has
+   successfully performed :code:`POST` operations to the InfluxDB
+   :code:`/write` endpoint to write points.
+ - "Total Points" is a counter of the total number of points ntopng
+   has successfully written to InfluxDB, across all the "Total Exports".
+ - "Dropped Points" counts the number of points ntopng has dropped as
+   it could not successfully export them to InfluxDB. Points are only
+   dropped after several attempts, that is, ntopng will try and
+   contact InfluxDB several times before actually dropping
+   points. Reasons for dropped points could be an unreachable, down, overloaded or
+   significantly impaired InfluxDB.
+ - "Series Cardinality" provides an indication of how challenging it is
+   for InfluxDB to handle written points. High  series cardinality is
+   a primary driver of high memory usage for many database workloads.
+   Hardware sizing guidelines for series cardinality
+   recommendations are available based on the hardware.
+
+"Total Exports", "Total Points" and "Dropped Points" are cumulative
+counters since the startup of ntopng.
+   
 Timeseries Configuration
 ------------------------
 
@@ -96,7 +146,7 @@ Moreover, having a lot of timeseries usually means slower query time.
 
 Enabling a "Traffic" timeseries usually has little impact on the performance. On the
 other hand, enabling the "Layer-7 Applications" (in particular for the local hosts)
-has an high impact since there are many protocols and timeseries must be processed
+has a high impact since there are many protocols and timeseries must be processed
 for each of them.
 
 It is possible to skip timeseries generation for a particular network interface

@@ -3,6 +3,8 @@
 --
 
 require("lua_utils")
+local alerts_api = require("alerts_api")
+local json = require("dkjson")
 
 local nagios = {}
 
@@ -20,12 +22,12 @@ function nagios.dequeueAlerts(queue)
       break
     end
 
-    local notif = alertNotificationToObject(notifications[1])
-    local entity_value = notif.entity_value
-    local akey = notif.alert_key
+    local notif = json.decode(notifications[1])
+    local entity_value = notif.alert_entity_val
+    local akey = alerts_api.getAlertId(notif)
 
     if notif.action == "engage" then
-      if not ntop.sendNagiosAlert(entity_value:gsub("@0", ""), akey, notif.message) then
+      if not ntop.sendNagiosAlert(entity_value:gsub("@0", ""), akey, notif.alert_json) then
         return {success=false, error_message="Unable to send alert to nagios"}
       end
     elseif notif.action == "release" then

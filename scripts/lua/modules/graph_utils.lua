@@ -12,6 +12,9 @@ local have_nedge = ntop.isnEdge()
 
 local ts_utils = require("ts_utils")
 
+-- Keep global, need to be accessed from nv_graph_utils
+schemas_graph_options = {}
+
 -- ########################################################
 
 if(ntop.isPro()) then
@@ -338,7 +341,7 @@ end
 
 -- Prints the menu from the populated graph_menu_entries.
 -- The entry_print_callback is called to print the actual entries.
-function printGraphMenuEntries(entry_print_callback)
+function printGraphMenuEntries(entry_print_callback, active_entry)
    local active_entries = {}
    local active_idx = 1 -- index in active_entries
    local needs_separator = false
@@ -348,6 +351,11 @@ function printGraphMenuEntries(entry_print_callback)
       if active_idx ~= 1 then
          needs_separator = needs_separator or entry.needs_separator
          separator_label = separator_label or entry.separator_label
+      end
+
+      if(active_entry == entry) then
+        -- Always consider the selected entry as active
+        entry.pending = 0
       end
 
       if(entry.pending and (entry.pending > 0)) then
@@ -390,6 +398,7 @@ function printSeries(options, tags, start_time, base_url, params)
    local mac_tags = nil
    local mac_params = nil
    local mac_baseurl = ntop.getHttpPrefix() .. "/lua/mac_details.lua?page=historical"
+   local is_pro = ntop.isPro()
 
    if params.tskey then
       -- this can contain a MAC address for local broadcast domain hosts
@@ -406,7 +415,8 @@ function printSeries(options, tags, start_time, base_url, params)
    end
 
    for _, serie in ipairs(series) do
-      if (have_nedge and serie.nedge_exclude) or (not have_nedge and serie.nedge_only) then
+      if ((have_nedge and serie.nedge_exclude) or (not have_nedge and serie.nedge_only)) or
+         (serie.pro_skip and is_pro) then
          goto continue
       end
 
@@ -427,6 +437,8 @@ function printSeries(options, tags, start_time, base_url, params)
          -- in getBatchedListSeriesResult
          local batch_ids = {}
 
+         schemas_graph_options[k] = serie
+
          if starts(k, "custom:") then
             if not ntop.isPro() then
                goto continue
@@ -436,13 +448,21 @@ function printSeries(options, tags, start_time, base_url, params)
             exists = true
          end
 
-         if serie.check ~= nil then
+         local to_check = serie.check or (serie.custom_schema and serie.custom_schema.bases)
+
+         if(to_check ~= nil) then
             exists = true
 
             -- In the case of custom series, the serie can only be shown if all
             -- the component series exists
-            for _, serie in pairs(serie.check) do
-               local batch_id = ts_utils.batchListSeries(serie, tags, start_time)
+            for idx, serie in pairs(to_check) do
+               local exist_tags = tags
+
+               if starts(k, "custom:") then
+                 exist_tags = getCustomSchemaTags(k, exist_tags, idx)
+               end
+
+               local batch_id = ts_utils.batchListSeries(serie, exist_tags, start_time)
 
                if batch_id == nil then
                   exists = false
@@ -846,28 +866,31 @@ print [[
 print('   <tr><th>&nbsp;</th><th>Time</th><th>Value</th></tr>\n')
 
 local stats = data.statistics
-local minval_time = stats.min_val_idx and (data.start + data.step * stats.min_val_idx) or ""
-local maxval_time = stats.max_val_idx and (data.start + data.step * stats.max_val_idx) or ""
-local lastval_time = data.start + data.step * (data.count-1)
-local lastval = 0
 
-for _, serie in pairs(data.series) do
-   lastval = lastval + serie.data[data.count]
-end
-if(not format_as_bps) then
-   print('   <tr><th>Min</th><td>' .. os.date("%x %X", minval_time) .. '</td><td>' .. formatValue(stats.min_val or "") .. '</td></tr>\n')
-   print('   <tr><th>Max</th><td>' .. os.date("%x %X", maxval_time) .. '</td><td>' .. formatValue(stats.max_val or "") .. '</td></tr>\n')
-   print('   <tr><th>Last</th><td>' .. os.date("%x %X", lastval_time) .. '</td><td>' .. formatValue(round(lastval), 1) .. '</td></tr>\n')
-   print('   <tr><th>Average</th><td colspan=2>' .. formatValue(round(stats.average, 2)) .. '</td></tr>\n')
-   print('   <tr><th>95th <A HREF=https://en.wikipedia.org/wiki/Percentile>Percentile</A></th><td colspan=2>' .. formatValue(round(stats["95th_percentile"], 2)) .. '</td></tr>\n')
-   print('   <tr><th>Total Number</th><td colspan=2>' ..  formatValue(round(stats.total)) .. '</td></tr>\n')
-else
-   print('   <tr><th>Min</th><td>' .. os.date("%x %X", minval_time) .. '</td><td>' .. bitsToSize((stats.min_val*8) or "") .. '</td></tr>\n')
-   print('   <tr><th>Max</th><td>' .. os.date("%x %X", maxval_time) .. '</td><td>' .. bitsToSize((stats.max_val*8) or "") .. '</td></tr>\n')
-   print('   <tr><th>Last</th><td>' .. os.date("%x %X", lastval_time) .. '</td><td>' .. bitsToSize(lastval*8)  .. '</td></tr>\n')
-   print('   <tr><th>Average</th><td colspan=2>' .. bitsToSize(stats.average*8) .. '</td></tr>\n')
-   print('   <tr><th>95th <A HREF=https://en.wikipedia.org/wiki/Percentile>Percentile</A></th><td colspan=2>' .. bitsToSize(stats["95th_percentile"]*8) .. '</td></tr>\n')
-   print('   <tr><th>Total Traffic</th><td colspan=2>' .. bytesToSize(stats.total) .. '</td></tr>\n')
+if(stats ~= nil) then
+  local minval_time = stats.min_val_idx and (data.start + data.step * stats.min_val_idx) or ""
+  local maxval_time = stats.max_val_idx and (data.start + data.step * stats.max_val_idx) or ""
+  local lastval_time = data.start + data.step * (data.count-1)
+  local lastval = 0
+
+  for _, serie in pairs(data.series) do
+     lastval = lastval + serie.data[data.count]
+  end
+  if(not format_as_bps) then
+     print('   <tr><th>Min</th><td>' .. os.date("%x %X", minval_time) .. '</td><td>' .. formatValue(stats.min_val or "") .. '</td></tr>\n')
+     print('   <tr><th>Max</th><td>' .. os.date("%x %X", maxval_time) .. '</td><td>' .. formatValue(stats.max_val or "") .. '</td></tr>\n')
+     print('   <tr><th>Last</th><td>' .. os.date("%x %X", lastval_time) .. '</td><td>' .. formatValue(round(lastval), 1) .. '</td></tr>\n')
+     print('   <tr><th>Average</th><td colspan=2>' .. formatValue(round(stats.average, 2)) .. '</td></tr>\n')
+     print('   <tr><th>95th <A HREF=https://en.wikipedia.org/wiki/Percentile>Percentile</A></th><td colspan=2>' .. formatValue(round(stats["95th_percentile"], 2)) .. '</td></tr>\n')
+     print('   <tr><th>Total Number</th><td colspan=2>' ..  formatValue(round(stats.total)) .. '</td></tr>\n')
+  else
+     print('   <tr><th>Min</th><td>' .. os.date("%x %X", minval_time) .. '</td><td>' .. bitsToSize((stats.min_val*8) or "") .. '</td></tr>\n')
+     print('   <tr><th>Max</th><td>' .. os.date("%x %X", maxval_time) .. '</td><td>' .. bitsToSize((stats.max_val*8) or "") .. '</td></tr>\n')
+     print('   <tr><th>Last</th><td>' .. os.date("%x %X", lastval_time) .. '</td><td>' .. bitsToSize(lastval*8)  .. '</td></tr>\n')
+     print('   <tr><th>Average</th><td colspan=2>' .. bitsToSize(stats.average*8) .. '</td></tr>\n')
+     print('   <tr><th>95th <A HREF=https://en.wikipedia.org/wiki/Percentile>Percentile</A></th><td colspan=2>' .. bitsToSize(stats["95th_percentile"]*8) .. '</td></tr>\n')
+     print('   <tr><th>Total Traffic</th><td colspan=2>' .. bytesToSize(stats.total) .. '</td></tr>\n')
+  end
 end
 
 print('   <tr><th>Selection Time</th><td colspan=2><div id=when></div></td></tr>\n')

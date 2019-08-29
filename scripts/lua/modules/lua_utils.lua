@@ -65,6 +65,10 @@ end
 -- ##############################################
 
 function getInterfaceName(interface_id, windows_skip_description)
+   if(interface_id == getSystemInterfaceId()) then
+      return(getSystemInterfaceName())
+   end
+
    local ifnames = interface.getIfNames()
    local iface = ifnames[tostring(interface_id)]
 
@@ -88,6 +92,10 @@ end
 -- ##############################################
 
 function getInterfaceId(interface_name)
+   if(interface_name == getSystemInterfaceName()) then
+      return(getSystemInterfaceId())
+   end
+
    local ifnames = interface.getIfNames()
 
    for if_id, if_name in pairs(ifnames) do
@@ -142,11 +150,12 @@ if((ifname == nil) and (_GET ~= nil)) then
    end
 end
 
---print("(((("..ifname.."))))")
 l4_keys = {
-  { "TCP", "tcp", 6 },
-  { "UDP", "udp", 17 },
-  { "ICMP", "icmp", 1 },
+  { "TCP",    "tcp",     6 },
+  { "UDP",    "udp",    17 },
+  { "ICMP",   "icmp",    1 },
+  { "ICMPv6", "icmpv6", 58 },
+  { "IGMP",   "igmp",    2 },
   { "Other IP", "other_ip", -1 }
 }
 
@@ -312,6 +321,33 @@ function printIpVersionDropdown(base_url, page_params)
          <li]] if ipversion == "4" then print(' class="active"') end print[[><a href="]] ipversion_params["version"] = "4"; print(getPageUrl(base_url, ipversion_params)); print[[">]] print(i18n("flows_page.ipv4_only")) print[[</a></li>\
          <li]] if ipversion == "6" then print(' class="active"') end print[[><a href="]] ipversion_params["version"] = "6"; print(getPageUrl(base_url, ipversion_params)); print[[">]] print(i18n("flows_page.ipv6_only")) print[[</a></li>\
       </ul>]]
+end
+
+-- ##############################################
+
+function printL4ProtoDropdown(base_url, page_params, l4_protocols)
+   local l4proto = _GET["l4proto"]
+   local l4proto_filter
+   if not isEmptyString(l4proto) then
+      l4proto_filter = '<span class="glyphicon glyphicon-filter"></span>'
+   else
+      l4proto_filter = ''
+   end
+   local l4proto_params = table.clone(page_params)
+   l4proto_params["l4proto"] = nil
+
+   print[[\
+      <button class="btn btn-link dropdown-toggle" data-toggle="dropdown">]] print(i18n("flows_page.l4_protocol")) print[[]] print(l4proto_filter) print[[<span class="caret"></span></button>\
+      <ul class="dropdown-menu" role="menu" id="flow_dropdown">\
+         <li><a href="]] print(getPageUrl(base_url, l4proto_params)) print[[">]] print(i18n("flows_page.all_l4_protocols")) print[[</a></li>]]
+
+    if l4_protocols then
+      for key, value in pairsByKeys(l4_protocols, asc) do
+        print[[<li]] if tonumber(l4proto) == key then print(' class="active"') end print[[><a href="]] l4proto_params["l4proto"] = key; print(getPageUrl(base_url, l4proto_params)); print[[">]] print(l4_proto_to_string(key)) print [[ (]] print(string.format("%d",value.count)) print [[)</a></li>]]
+      end
+    end
+
+    print[[</ul>]]
 end
 
 -- ##############################################
@@ -564,7 +600,7 @@ function l4_proto_to_string(proto_id)
       end
    end
 
-   return nil
+   return string.format("%d", proto_id)
 end
 
 -- ##############################################
@@ -576,23 +612,6 @@ function table.len(T)
 end
 
 -- ##############################################
-
--- Note: make sure the maximum id for checkpoint_keys honours CONST_MAX_NUM_CHECKPOINTS
-local checkpoint_keys = {
-   -- following checkpoints are used for alerts
-   {0, "min"},
-   {1, "5mins"},
-   {2, "hour"},
-   {3, "day"},
-}
-
-function checkpointId(v)
-   local checkpointtable = {}
-   for i, t in ipairs(checkpoint_keys) do
-      checkpointtable[#checkpointtable + 1] = {t[1], t[2]}
-   end
-   return(_handleArray(checkpointtable, v))
-end
 
 function noHtml(s)
    if s == nil then return nil end
@@ -618,110 +637,8 @@ function noHtml(s)
    return unescape(cleaned)
 end
 
-function alertSeverityLabel(v, nohtml)
-   local res = _handleArray(alert_consts.alert_severity_keys, tonumber(v))
-   if res ~= nil and nohtml == true then res = noHtml(res) end
-   return res
-end
-
-function alertSeverity(v)
-   local severity_table = {}
-   for i, t in ipairs(alert_consts.alert_severity_keys) do
-      severity_table[#severity_table + 1] = {t[2], t[3]}
-   end
-   return(_handleArray(severity_table, v))
-end
-
-function alertSeverityRaw(sev_idx)
-   sev_idx = sev_idx + 2 -- -1 and 0
-   if sev_idx <= #alert_consts.alert_severity_keys then
-      return alert_consts.alert_severity_keys[sev_idx][3]
-   end
-   return nil
-end
-
-function alertTypeLabel(v, nohtml)
-   local res = _handleArray(alert_consts.alert_type_keys, tonumber(v))
-   if res ~= nil and nohtml == true then res = noHtml(res) end
-   return res
-end
-
-function alertType(v)
-   local typetable = {}
-   for i, t in ipairs(alert_consts.alert_type_keys) do
-      typetable[#typetable + 1] = {t[2], t[3]}
-   end
-   return(_handleArray(typetable, v))
-end
-
-function alertEngine(v)
-   local enginetable = {}
-   for i, t in ipairs(alert_consts.alert_functions_description) do
-      enginetable[#enginetable + 1] = {t[2], t[3]}
-   end
-   return(_handleArray(enginetable, v))
-end
-
-function alertEngineLabel(v)
-   return _handleArray(alert_consts.alert_functions_description, tonumber(v))
-end
-
-function alertEngineRaw(idx)
-   idx = idx + 1
-   if idx <= #alert_consts.alert_functions_description then
-      return alert_consts.alert_functions_description[idx][3]
-   end
-   return nil
-end
-
-function alertLevel(v)
-   local leveltable = {}
-
-   for i, t in ipairs(alert_consts.alert_severity_keys) do
-      leveltable[#leveltable + 1] = {t[2], t[3]}
-   end
-   return(_handleArray(leveltable, v))
-end
-
 function alertLevelToSyslogLevel(v)
-   local leveltable = {}
-
-   for i, t in ipairs(alert_consts.alert_severity_keys) do
-      leveltable[#leveltable + 1] = {t[4], t[3]}
-   end
-   return(_handleArray(leveltable, v))
-end
-
-function alertTypeRaw(alert_idx)
-   if(alert_idx == nil) then return nil end
-
-   alert_idx = alert_idx + 2 -- -1 and 0
-   if alert_idx <= #alert_consts.alert_type_keys then
-      return alert_consts.alert_type_keys[alert_idx][3]
-   end
-   return nil
-end
-
-function alertEntityLabel(v, nothml)
-   local res = _handleArray(alert_consts.alert_entity_keys, tonumber(v))
-   if res ~= nil and nohtml == true then res = noHtml(res) end
-   return res
-end
-
-function alertEntity(v)
-   local typetable = {}
-   for i, t in ipairs(alert_consts.alert_entity_keys) do
-      typetable[#typetable + 1] = {t[2], t[3]}
-   end
-   return(_handleArray(typetable, v))
-end
-
-function alertEntityRaw(entity_idx)
-   entity_idx = entity_idx + 1
-   if entity_idx <= #alert_consts.alert_entity_keys then
-      return alert_consts.alert_entity_keys[entity_idx][3]
-   end
-   return nil
+  return alert_consts.alert_severities[v]
 end
 
 function areAlertsEnabled()
@@ -729,8 +646,7 @@ function areAlertsEnabled()
 end
 
 function mustScanAlerts(ifstats)
-   -- can't alert on view interfaces as checkpoints will collide for their underlying real interfaces
-   return areAlertsEnabled() and not ifstats["isView"]
+   return areAlertsEnabled()
 end
 
 function hasAlertsDisabled()
@@ -747,16 +663,25 @@ function hasNagiosSupport()
 end
 
 function hasNindexSupport()
+   if not ntop.isEnterprise() or ntop.isWindows() then
+      return false
+   end
+
    -- TODO optimize
    if prefs == nil then
     prefs = ntop.getPrefs()
    end
 
-   if prefs.is_nindex_enabled and interface.nIndexEnabled() then
+   if prefs.is_nindex_enabled then
       return true
    end
 
    return false
+end
+
+-- NOTE: global nindex support may be enabled but some disable on some interfaces
+function interfaceHasNindexSupport()
+  return(hasNindexSupport() and interface.nIndexEnabled())
 end
 
 --for _key, _value in pairsByKeys(vals, rev) do
@@ -1229,51 +1154,6 @@ end
 
 -- #################################
 
-function getOSIcon(name)
-  icon = ""
-
-  if(findString(name, "Linux") or findString(name, "Ubuntu")) then icon = '<i class=\'fa fa-linux fa-lg\'></i> '
-  elseif(findString(name, "Android")) then icon = '<i class=\'fa fa-android fa-lg\'></i> '
-  elseif(findString(name, "Windows") or findString(name, "Win32") or findString(name, "MSIE")) then icon = '<i class=\'fa fa-windows fa-lg\'></i> '
-  elseif(findString(name, "iPhone") or findString(name, "iPad") or findString(name, "OS X") ) then icon = '<i class=\'fa fa-apple fa-lg\'></i> '
-  end
-
-  return(icon)
-end
-
--- #################################
-
-function getOperatingSystemName(id)
-   if(id == 0) then return("Unknown")
-   elseif(id == 1) then return("Linux")
-   elseif(id == 2) then return("Windows")
-   elseif(id == 3) then return("MacOS")
-   elseif(id == 4) then return("iOS")
-   elseif(id == 5) then return("Android")
-   elseif(id == 6) then return("LaserJET")
-   elseif(id == 7) then return("AppleAirport")
-   else
-      return("") -- Unknown
-   end
-end
-
--- #################################
-
-function getOperatingSystemIcon(id)
-   if(id == 1) then return(' <i class=\'fa fa-linux fa-lg\'></i>')
-   elseif(id == 2) then return(' <i class=\'fa fa-windows fa-lg\'></i>')
-   elseif(id == 3) then return(' <i class=\'fa fa-apple fa-lg\'></i>')
-   elseif(id == 4) then return(' <i class=\'fa fa-apple fa-lg\'></i>')
-   elseif(id == 5) then return(' <i class=\'fa fa-android fa-lg\'></i>')
-   elseif(id == 6) then return(' LasetJET')
-   elseif(id == 7) then return(' Apple Airport')
-
-   else return("")
-   end
-end
-
--- #################################
-
 function getApplicationIcon(name)
   local icon = ""
   if(name == nil) then name = "" end
@@ -1308,14 +1188,6 @@ end
 function getCategoryLabel(cat_name)
   cat_name = cat_name:gsub("^%l", string.upper)
   return(cat_name)
-end
-
-function mapOS2Icon(name)
-  if(name == nil) then
-    return("")
-  else
-    return(getOSIcon(name) .. name)
-  end
 end
 
 function getItemsNumber(n)
@@ -1520,7 +1392,7 @@ function flowinfo2hostname(flow_info, host_type, alerts_view)
    end
 
    if(host_type == "srv") then
-      if(flow_info["host_server_name"] ~= nil and flow_info["host_server_name"] ~= "") then
+      if flow_info["host_server_name"] ~= nil and flow_info["host_server_name"] ~= "" and flow_info["host_server_name"]:match("%w") then
 	 -- remove possible ports from the name
 	 return(flow_info["host_server_name"]:gsub(":%d+$", ""))
       end
@@ -1550,8 +1422,7 @@ function flowinfo2process(process, host_info_to_url)
 	 
 	 clean_name = t[#t]
 
-	 -- proc_name = string.format("<i class='fa fa-terminal'></i> %s", clean_name)
-	 proc_name = string.format("<A HREF='%s/lua/process_details.lua?%s&pid_name=%s&pid=%u'><i class='fa fa-terminal'></i>%s</A>",
+	 proc_name = string.format("<A HREF='%s/lua/process_details.lua?%s&pid_name=%s&pid=%u'><i class='fa fa-terminal'></i> %s</A>",
 				   ntop.getHttpPrefix(),
 				   host_info_to_url,
 				   full_clean_name,
@@ -1559,19 +1430,42 @@ function flowinfo2process(process, host_info_to_url)
 				   clean_name)
       end
 
-      if not isEmptyString(process["user_name"]) then
-	 local clean_user_name = process["user_name"]:gsub("'", '')
+      -- if not isEmptyString(process["user_name"]) then
+      -- 	 local clean_user_name = process["user_name"]:gsub("'", '')
 
-	 -- proc_user_name = string.format("<i class='fa fa-linux'></i> %s", clean_user_name)
-	 proc_user_name = string.format("<A HREF='%s/lua/username_details.lua?%s&username=%s&uid=%u'><i class='fa fa-linux'></i> %s</A>",
-					ntop.getHttpPrefix(),
-					host_info_to_url,
-					clean_user_name,
-					process["uid"],
-					clean_user_name)
-      end
+      -- 	 proc_user_name = string.format("<A HREF='%s/lua/username_details.lua?%s&username=%s&uid=%u'><i class='fa fa-linux'></i> %s</A>",
+      -- 					ntop.getHttpPrefix(),
+      -- 					host_info_to_url,
+      -- 					clean_user_name,
+      -- 					process["uid"],
+      -- 					clean_user_name)
+      -- end
 
       fmt = string.format("[%s]", table.concat({proc_user_name, proc_name}, ' '))
+   end
+
+   return fmt
+end
+
+-- ##############################################
+
+function flowinfo2container(container)
+   local fmt, cont_name, pod_name = '', '', ''
+
+   if container then
+      cont_name = string.format("<A HREF='%s/lua/flows_stats.lua?container=%s'><i class='fa fa-ship'></i> %s</A>",
+				ntop.getHttpPrefix(),
+				container["id"], format_utils.formatContainer(container))
+
+      -- local formatted_pod = format_utils.formatPod(container)
+      -- if not isEmptyString(formatted_pod) then
+      -- 	 pod_name = string.format("<A HREF='%s/lua/containers_stats.lua?pod=%s'><i class='fa fa-crosshairs'></i> %s</A>",
+      -- 				  ntop.getHttpPrefix(),
+      -- 				  formatted_pod,
+      -- 				  formatted_pod)
+      -- end
+
+      fmt = string.format("[%s]", table.concat({cont_name, pod_name}, ''))   
    end
 
    return fmt
@@ -1673,9 +1567,8 @@ function hostinfo2hostkey(host_info,host_type,show_vlan)
     end
   end
 
-  if(((host_info["vlan"] ~= nil) and (host_info["vlan"] ~= 0))
-     or ((show_vlan ~= nil) and show_vlan and (host_info["vlan"] ~= nil)))  then
-    rsp = rsp..'@'..tostring(host_info["vlan"])
+  if((host_info["vlan"] ~= nil and host_info["vlan"] ~= 0) or show_vlan)  then
+    rsp = rsp..'@'..tostring(host_info["vlan"] or 0)
   end
 
   if(debug_host) then traceError(TRACE_DEBUG,TRACE_CONSOLE,"HOST2URL => ".. rsp .. "\n") end
@@ -1756,10 +1649,11 @@ function hostinfo2url(host_info, host_type, novlan)
       rsp = rsp..'host='..host_info["host"]
     elseif(host_info["ip"] ~= nil) then
       rsp = rsp..'host='..host_info["ip"]
-    elseif(host_info["name"] ~= nil) then
-      rsp = rsp..'host='..host_info["name"]
     elseif(host_info["mac"] ~= nil) then
       rsp = rsp..'host='..host_info["mac"]
+    --Note: the host'name' is not supported (not accepted by lint)
+    --elseif(host_info["name"] ~= nil) then
+    --  rsp = rsp..'host='..host_info["name"]
     end
   end
 
@@ -2326,7 +2220,7 @@ function hasKey(key, theTable)
 end
 function getPasswordInputPattern()
   -- maximum len must be kept in sync with MAX_PASSWORD_LEN
-  return [[^[\w\$\\!\/\(\)=\?\^\*@_\-\u0000-\u0019\u0021-\u00ff]{5,31}$]]
+  return [[^[\w\$\\!\/\(\)= \?\^\*@_\-\u0000-\u0019\u0021-\u00ff]{5,31}$]]
 end
 
 function getIPv4Pattern()
@@ -2553,6 +2447,23 @@ end
 
 -- ###############################################
 
+function formatIDSFlowAlert(flowstatus_info)
+   local signature = (flowstatus_info.ids_alert and flowstatus_info.ids_alert.signature)
+   local category = (flowstatus_info.ids_alert and flowstatus_info.ids_alert.category)
+   local severity = (flowstatus_info.ids_alert and flowstatus_info.ids_alert.severity)
+   local signature_info = (signature and signature:split(" "));
+   local maker = (signature_info and table.remove(signature_info, 1))
+   local scope = (signature_info and table.remove(signature_info, 1))
+   local msg = (signature_info and table.concat(signature_info, " "))
+   if maker and alert_consts.ids_rule_maker[maker] then
+     maker = alert_consts.ids_rule_maker[maker]
+   end
+   local res = i18n("flow_details.ids_alert", { scope=scope, msg=msg, severity=severity, maker=maker } )
+   return res
+end
+
+-- ###############################################
+
 function formatElephantFlowAlert(flowstatus_info, local2remote)
    local threshold = ""
    local res = ""
@@ -2605,6 +2516,20 @@ function formatLongLivedFlowAlert(flowstatus_info)
    end
 
    return res
+end
+
+-- ###############################################
+
+function formatMaliciousSignature(flowstatus_info)
+  if(flowstatus_info.ja3_signature ~= nil) then
+    return(i18n("flow_details.malicious_ja3_signature", {
+      signature = flowstatus_info.ja3_signature,
+      url = "https://sslbl.abuse.ch/ja3-fingerprints/" .. flowstatus_info.ja3_signature,
+      icon = " <i class=\"fa fa-external-link\"></i>",
+    }))
+  end
+
+  return(i18n("alerts_dashboard.malicious_signature_detected"))
 end
 
 -- ###############################################
@@ -2662,6 +2587,7 @@ end
 -- ###############################################
 
 -- Update Utils::flowstatus2str / FlowStatus enum
+-- Utils::flowStatus2str determines the actual alert_type to set
 
 function getFlowStatusTypes()
    local entries = {
@@ -2691,6 +2617,8 @@ function getFlowStatusTypes()
    [23] = i18n("flow_details.ssl_unsafe_ciphers"),
    [24] = i18n("flow_details.data_exfiltration"),
    [25] = i18n("flow_details.ssl_old_protocol_version"),
+   [26] = i18n("flow_details.potentially_dangerous_protocol"),
+   [27] = i18n("alerts_dashboard.malicious_signature_detected"),
    }
 
    return entries
@@ -2708,8 +2636,9 @@ function getFlowStatus(status, flowstatus_info, alert, no_icon)
    elseif(status == 17) then res = warn_sign..formatElephantFlowAlert(flowstatus_info, true --[[ local 2 remote --]])
    elseif(status == 18) then res = warn_sign..formatElephantFlowAlert(flowstatus_info, false --[[ remote 2 local --]])
    elseif(status == 19) then res = warn_sign..formatLongLivedFlowAlert(flowstatus_info)
-   elseif(status == 21) then res = warn_sign..i18n("flow_details.ids_alert", { signature=(flowstatus_info.ids_alert and flowstatus_info.ids_alert.signature), severity=(flowstatus_info.ids_alert and flowstatus_info.ids_alert.severity)} )
+   elseif(status == 21) then res = warn_sign..formatIDSFlowAlert(flowstatus_info)
    elseif(status == 22) then res = warn_sign..i18n("flow_details.tcp_severe_connection_issues")
+   elseif(status == 27) then res = warn_sign..formatMaliciousSignature(flowstatus_info)
    elseif(status == 0) then res = types[0]
    elseif(types[status] ~= nil) then res = warn_sign..types[status]
    end
@@ -2960,7 +2889,20 @@ function getTzOffsetSeconds()
    local utc_t = os.date("!*t", now)
    local delta = os.time(local_t) - os.time(utc_t)
 
-   return(delta)
+   if utc_t.isdst then
+      -- DST is the practice of advancing clocks during summer months
+      -- so that evening daylight lasts longer, while sacrificing normal sunrise times.
+      -- utc_t is increased by one hour when the time is DST.
+      -- For example, an UTC time of 2pm would be reported by lua as 3pm with
+      -- the isdst flag set.
+      -- For this reason, we need to add back the hour to the computed delta.
+      delta = delta + 3600
+   end
+
+   -- tprint(string.format("local_t %u [%s][isdst: %s]", os.time(local_t), formatEpoch(os.time(local_t)), local_t.isdst))
+   -- tprint(string.format("utc_t   %u [%s][isdst: %s]", os.time(utc_t), formatEpoch(os.time(utc_t)), utc_t.isdst))
+
+   return delta
 end
 
 -- ####################################################
@@ -2972,7 +2914,7 @@ function makeTimeStamp(d, tzoffset)
 
    local timestamp = os.time({year=year, month=month, day=day, hour=hour, min=minute, sec=seconds});
 
-   -- tprint("pre-timestamp is:"..timestamp)
+   -- tprint(string.format("pre-timestamp is %u [%s]", timestamp, formatEpoch(timestamp)))
    if tzoffset then
       -- from browser local time to UTC
       timestamp = timestamp - (tzoffset or 0)
@@ -2980,12 +2922,12 @@ function makeTimeStamp(d, tzoffset)
       -- from UTC to machine local time
       local delta = getTzOffsetSeconds()
 
-      timestamp = timestamp + (delta or 0)
+      timestamp = math.floor(timestamp + (delta or 0))
       -- tprint("delta: "..delta.." tzoffset is: "..tzoffset)
-      -- tprint("post-timestamp is:"..timestamp)
+      -- tprint(string.format("post-timestamp is %u [%s]", timestamp, formatEpoch(timestamp)))
    end
 
-   return math.floor(timestamp).."";
+   return string.format("%u", timestamp)
 end
 
 -- ###########################################

@@ -21,6 +21,7 @@ local remote_assistance = require "remote_assistance"
 local page_utils = require("page_utils")
 local ts_utils = require("ts_utils")
 local influxdb = require("influxdb")
+local alert_endpoints = require("alert_endpoints_utils")
 local nindex_utils = nil
 
 local email_peer_pattern = [[^(([A-Za-z0-9._%+-]|\s)+<)?[A-Za-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,4}>?$]]
@@ -28,7 +29,9 @@ local email_peer_pattern = [[^(([A-Za-z0-9._%+-]|\s)+<)?[A-Za-z0-9._%+-]+@[a-z0-
 if(ntop.isPro()) then
   package.path = dirs.installdir .. "/scripts/lua/pro/?.lua;" .. package.path
   package.path = dirs.installdir .. "/scripts/lua/pro/modules/?.lua;" .. package.path
-  nindex_utils = require("nindex_utils")
+  if hasNindexSupport() then
+     nindex_utils = require("nindex_utils")
+  end
 end
 
 sendHTTPContentTypeHeader('text/html')
@@ -426,6 +429,13 @@ function printAlerts()
   })
 
   prefsToggleButton(subpage_active, {
+    field = "toggle_potentially_dangerous_protocols_alerts",
+    pref = "potentially_dangerous_protocols_alerts",
+    default = "1",
+    hidden = not showElements,
+  })
+
+  prefsToggleButton(subpage_active, {
     field = "toggle_device_protocols_alerts",
     pref = "device_protocols_alerts",
     default = "0",
@@ -442,7 +452,7 @@ function printAlerts()
   prefsInputFieldPrefs(subpage_active.entries["longlived_flow_duration"].title, 
      subpage_active.entries["longlived_flow_duration"].description,
     "ntopng.prefs.", "longlived_flow_duration", prefs.longlived_flow_duration, 
-    "number", showElements, nil, nil, {min=1, max=60*60*24*7, tformat="hd"})
+    "number", showElements, nil, nil, {min=1, max=60*60*24*7, tformat="mhd"})
 
   prefsToggleButton(subpage_active, {
     field = "toggle_elephant_flows_alerts",
@@ -571,14 +581,14 @@ function printExternalAlertsReport()
 
 	prefsToggleButton(subpage_active, {
 	      field = "toggle_email_notification",
-	      pref = getAlertNotificationModuleEnableKey("email", true),
+	      pref = alert_endpoints.getAlertNotificationModuleEnableKey("email", true),
 	      default = "0",
 	      disabled = (showElements==false),
 	      to_switch = elementToSwitch,
 	})
 
 	local showEmailNotificationPrefs = false
-	if ntop.getPref(getAlertNotificationModuleEnableKey("email")) == "1" then
+	if ntop.getPref(alert_endpoints.getAlertNotificationModuleEnableKey("email")) == "1" then
 	   showEmailNotificationPrefs = true
 	else
 	   showEmailNotificationPrefs = false
@@ -586,7 +596,7 @@ function printExternalAlertsReport()
 
 	multipleTableButtonPrefs(subpage_active.entries["slack_notification_severity_preference"].title, subpage_active.entries["slack_notification_severity_preference"].description,
 				 alert_sev_labels, alert_sev_values, "error", "primary", "email_notification_severity_preference",
-				 getAlertNotificationModuleSeverityKey("email"), nil, nil, nil, nil, showElements and showEmailNotificationPrefs)
+				 alert_endpoints.getAlertNotificationModuleSeverityKey("email"), nil, nil, nil, nil, showElements and showEmailNotificationPrefs)
 
 	prefsInputFieldPrefs(subpage_active.entries["email_notification_server"].title, subpage_active.entries["email_notification_server"].description,
 			     "ntopng.prefs.alerts.", "smtp_server",
@@ -609,14 +619,14 @@ function printExternalAlertsReport()
 
     prefsToggleButton(subpage_active, {
       field = "toggle_slack_notification",
-      pref = getAlertNotificationModuleEnableKey("slack", true),
+      pref = alert_endpoints.getAlertNotificationModuleEnableKey("slack", true),
       default = "0",
       disabled = showElements==false,
       to_switch = elementToSwitchSlack,
     })
 
     local showSlackNotificationPrefs = false
-    if ntop.getPref(getAlertNotificationModuleEnableKey("slack")) == "1" then
+    if ntop.getPref(alert_endpoints.getAlertNotificationModuleEnableKey("slack")) == "1" then
        showSlackNotificationPrefs = true
     else
        showSlackNotificationPrefs = false
@@ -624,7 +634,7 @@ function printExternalAlertsReport()
 
     multipleTableButtonPrefs(subpage_active.entries["slack_notification_severity_preference"].title, subpage_active.entries["slack_notification_severity_preference"].description,
                  alert_sev_labels, alert_sev_values, "error", "primary", "slack_notification_severity_preference",
-           getAlertNotificationModuleSeverityKey("slack"), nil, nil, nil, nil, showElements and showSlackNotificationPrefs)
+           alert_endpoints.getAlertNotificationModuleSeverityKey("slack"), nil, nil, nil, nil, showElements and showSlackNotificationPrefs)
 
     prefsInputFieldPrefs(subpage_active.entries["sender_username"].title, subpage_active.entries["sender_username"].description,
              "ntopng.prefs.alerts.", "slack_sender_username",
@@ -637,10 +647,9 @@ function printExternalAlertsReport()
     -- Channel settings
     print('<tr id="slack_channels" style="' .. ternary(showSlackNotificationPrefs, "", "display:none;").. '"><td><strong>' .. i18n("prefs.slack_channel_names") .. '</strong><p><small>' .. i18n("prefs.slack_channel_names_descr") .. '</small></p></td><td><table class="table table-bordered table-condensed"><tr><th>'.. i18n("prefs.alert_entity") ..'</th><th>' .. i18n("prefs.slack_channel") ..'</th></tr>')
 
-    for _, entity in ipairs(alert_consts.alert_entity_keys) do
-      local label = entity[1]
-      local entity_type = entity[2]
-      local entity_type_raw = entity[3]
+    for entity_type_raw, entity in pairsByKeys(alert_consts.alert_entities) do
+      local entity_type = alertEntity(entity_type_raw)
+      local label = alertEntityLabel(entity_type)
       local channel = slack_utils.getChannelName(entity_type_raw)
 
       print('<tr><td>'.. label ..'</td><td><div class="form-group" style="margin:0"><input class="form-control input-sm" name="slack_ch_'.. entity_type ..'" pattern="[^\' \']*" value="'.. channel ..'"></div></td></tr>')
@@ -658,7 +667,7 @@ function printExternalAlertsReport()
 
       prefsToggleButton(subpage_active, {
         field = "toggle_alert_syslog",
-        pref = getAlertNotificationModuleEnableKey("syslog", true),
+        pref = alert_endpoints.getAlertNotificationModuleEnableKey("syslog", true),
         default = "0",
 	disabled = alertsEnabled == false,
         to_switch = elementToSwitch,
@@ -667,7 +676,7 @@ function printExternalAlertsReport()
       local format_labels = {i18n("prefs.syslog_alert_format_plaintext"), i18n("prefs.syslog_alert_format_json")}
       local format_values = {"plaintext", "json"}
 
-      if ntop.getPref(getAlertNotificationModuleEnableKey("syslog")) == "0" then
+      if ntop.getPref(alert_endpoints.getAlertNotificationModuleEnableKey("syslog")) == "0" then
         alertsEnabled = false
       end
 
@@ -694,21 +703,21 @@ function printExternalAlertsReport()
 
       prefsToggleButton(subpage_active, {
         field = "toggle_alert_nagios",
-        pref = getAlertNotificationModuleEnableKey("nagios", true),
+        pref = alert_endpoints.getAlertNotificationModuleEnableKey("nagios", true),
         default = "0",
         disabled = alertsEnabled == false,
         to_switch = elementToSwitch,
       })
 
       local showNagiosElements = showElements
-      if ntop.getPref(getAlertNotificationModuleEnableKey("nagios")) == "0" then
+      if ntop.getPref(alert_endpoints.getAlertNotificationModuleEnableKey("nagios")) == "0" then
         showNagiosElements = false
       end
       showNagiosElements = alertsEnabled and showNagiosElements
 
       multipleTableButtonPrefs(subpage_active.entries["slack_notification_severity_preference"].title, subpage_active.entries["slack_notification_severity_preference"].description,
                  alert_sev_labels, alert_sev_values, "error", "primary", "nagios_notification_severity_preference",
-           getAlertNotificationModuleSeverityKey("nagios"), nil, nil, nil, nil, showNagiosElements, false)
+           alert_endpoints.getAlertNotificationModuleSeverityKey("nagios"), nil, nil, nil, nil, showNagiosElements, false)
 
       prefsInputFieldPrefs(subpage_active.entries["nagios_nsca_host"].title, subpage_active.entries["nagios_nsca_host"].description, "ntopng.prefs.", "nagios_nsca_host", prefs.nagios_nsca_host, nil, showNagiosElements, false)
       prefsInputFieldPrefs(subpage_active.entries["nagios_nsca_port"].title, subpage_active.entries["nagios_nsca_port"].description, "ntopng.prefs.", "nagios_nsca_port", prefs.nagios_nsca_port, "number", showNagiosElements, false, nil, {min=1, max=65535})
@@ -725,14 +734,14 @@ function printExternalAlertsReport()
 
     prefsToggleButton(subpage_active, {
       field = "toggle_webhook_notification",
-      pref = getAlertNotificationModuleEnableKey("webhook", true),
+      pref = alert_endpoints.getAlertNotificationModuleEnableKey("webhook", true),
       default = "0",
       disabled = showElements==false,
       to_switch = elementToSwitchWebhook,
     })
 
     local showWebhookNotificationPrefs = false
-    if ntop.getPref(getAlertNotificationModuleEnableKey("webhook")) == "1" then
+    if ntop.getPref(alert_endpoints.getAlertNotificationModuleEnableKey("webhook")) == "1" then
        showWebhookNotificationPrefs = true
     else
        showWebhookNotificationPrefs = false
@@ -740,7 +749,7 @@ function printExternalAlertsReport()
 
     multipleTableButtonPrefs(subpage_active.entries["webhook_notification_severity_preference"].title, subpage_active.entries["webhook_notification_severity_preference"].description,
                  alert_sev_labels, alert_sev_values, "error", "primary", "webhook_notification_severity_preference",
-           getAlertNotificationModuleSeverityKey("webhook"), nil, nil, nil, nil, showElements and showWebhookNotificationPrefs)
+           alert_endpoints.getAlertNotificationModuleSeverityKey("webhook"), nil, nil, nil, nil, showElements and showWebhookNotificationPrefs)
 
     prefsInputFieldPrefs(subpage_active.entries["webhook_url"].title, subpage_active.entries["webhook_url"].description,
              "ntopng.prefs.alerts.", "webhook_url",
@@ -1393,7 +1402,7 @@ function printStatsTimeseries()
   print('<tr><th colspan=2 class="info">'..i18n('prefs.timeseries_database')..'</th></tr>')
 
   local elementToSwitch = {"ts_post_data_url", "influx_dbname", "influx_retention", "row_toggle_influx_auth", "influx_username", "influx_password", "row_ts_high_resolution"}
-  local showElementArray = {false, true}
+  local showElementArray = {false, true, false}
 
   local javascriptAfterSwitch = "";
   javascriptAfterSwitch = javascriptAfterSwitch.."  if($(\"#id-toggle-timeseries_driver\").val() == \"influxdb\") {\n"
@@ -1405,7 +1414,7 @@ function printStatsTimeseries()
   javascriptAfterSwitch = javascriptAfterSwitch.."      $(\"#influx_password\").css(\"display\",\"none\");\n"
   javascriptAfterSwitch = javascriptAfterSwitch.."    }\n"
   javascriptAfterSwitch = javascriptAfterSwitch.."    $(\"#old_rrd_files_retention\").css(\"display\",\"none\");\n"
-  javascriptAfterSwitch = javascriptAfterSwitch.."  } else {\n"
+  javascriptAfterSwitch = javascriptAfterSwitch.."  } else if($(\"#id-toggle-timeseries_driver\").val() == \"rrd\") {\n"
   javascriptAfterSwitch = javascriptAfterSwitch.."    $(\"#old_rrd_files_retention\").css(\"display\",\"table-row\");\n"
   javascriptAfterSwitch = javascriptAfterSwitch.."  }\n"
 
@@ -1415,7 +1424,7 @@ function printStatsTimeseries()
   if not ntop.isWindows() then
     multipleTableButtonPrefs(subpage_active.entries["multiple_timeseries_database"].title,
 				    subpage_active.entries["multiple_timeseries_database"].description,
-				    {"RRD", "InfluxDB"}, {"rrd", "influxdb"},
+				    {"RRD", "InfluxDB", "Prometheus [Export Only]"}, {"rrd", "influxdb", "prometheus"},
 				    "rrd",
 				    "primary",
 				    "timeseries_driver",
@@ -1613,6 +1622,14 @@ function printStatsTimeseries()
     default = "0",
     pref = "country_rrd_creation",
   })
+
+  if ntop.isPro() then
+    prefsToggleButton(subpage_active, {
+      field = "toggle_ndpi_flows_rrds",
+      default = "0",
+      pref = "ndpi_flows_rrd_creation",
+    })
+  end
 
   print('</table>')
 
@@ -1955,6 +1972,24 @@ if tonumber(_POST["ts_high_resolution"]) ~= nil then
     end
   end
 
+  -- When high resolution timeseries are enabled, the ntopng C core creates
+  -- timeseries rings with diffent slots. Each slot holds a snapshot of the
+  -- host/interface timeseries in a given time interval. For example, if 10s
+  -- resolution is choose, each slot holds a snapshot representing an interval
+  -- of 10s. Periodically (in NetworkInterface::periodicStatsUpdate) the slots
+  -- are polulated and then in minute.lua they are read and exported.
+  --
+  -- This Redis preferences tell the C core how to configure the ring:
+  --  - ntopng.prefs.ts_write_slots: the number of slots to allocate in the ring
+  --  - ntopng.prefs.ts_write_steps: how many ticks of NetworkInterface::periodicStatsUpdate
+  --    are necessary to fill a slot.
+  --
+  -- For the example above of 10s resolution:
+  --  - ntopng.prefs.ts_write_slots = 60 / 10 = 6 slots, + 1 extra slot as buffer (see above) = 7
+  --  - ntopng.prefs.ts_write_steps = 60 / 6 slots = 10s / 5 (5s is the periodicStatsUpdate interval) = 2
+  --
+  -- See TimseriesRing.cpp for more details.
+  --
   ntop.setPref("ntopng.prefs.ts_write_slots", tostring(math.ceil(new_slots)))
   ntop.setPref("ntopng.prefs.ts_write_steps", tostring(math.ceil(new_steps)))
 end

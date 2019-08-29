@@ -208,7 +208,7 @@ end
 
 local function validatePassword(p)
    -- A password (e.g. used in ntopng authentication)
-   return validateSingleWord(p)
+   return validateUnquoted(p)
 end
 
 local function validateAbsolutePath(p)
@@ -242,6 +242,12 @@ local function validateOperator(mode)
    local modes = {"gt", "eq", "lt"}
 
    return validateChoice(modes, mode)
+end
+
+local function validateAlertValue(value)
+  return validateEmpty(value) or
+    validateNumber(value) or
+    validateOnOff(value)
 end
 
 local function validateHttpMode(mode)
@@ -320,6 +326,12 @@ local function validateSendersReceivers(mode)
    local modes = {"senders", "receivers"}
 
    return validateChoice(modes, mode)
+end
+
+local function validateFingerprintType(ft)
+   local fingerprint_types = {"ja3", "hassh"}
+
+   return validateChoice(fingerprint_types, ft)
 end
 
 local function validateClientOrServer(mode)
@@ -762,17 +774,7 @@ local function validateShapedElement(elem_id)
 end
 
 local function validateAlertDescriptor(d)
-   if starts(d, "global_") then
-      d = split(d, "global_")[2]
-   end
-
-   if ((validateChoiceByKeys(alert_consts.alert_functions_description, d)) or
-       (validateChoiceByKeys(alert_consts.iface_alert_functions_description, d)) or
-       (validateChoiceByKeys(alert_consts.network_alert_functions_description, d))) then
-      return true
-   else
-      return false
-   end
+   return(validateSingleWord(d))
 end
 
 local function validateInterfacesList(l)
@@ -960,7 +962,7 @@ local known_parameters = {
    ["referer"]                 = validateUnquoted,             -- An URL referer
    ["url"]                     = validateUnquoted,             -- An URL
    ["label"]                   = validateUnquoted,             -- A device label
-   ["os"]                      = validateUnquoted,             -- An Operating System string
+   ["os"]                      = validateNumber,               -- An Operating System id
    ["info"]                    = validateUnquoted,             -- An information message
    ["entity_val"]              = validateUnquoted,             -- An alert entity value
    ["full_name"]               = validateUnquoted,             -- A user full name
@@ -1140,6 +1142,7 @@ local known_parameters = {
    ["device_type"]             = validateNumber,
    ["ewma_alpha_percent"]      = validateNumber,
    ["senders_receivers"]       = validateSendersReceivers,      -- Used in top scripts
+   ["fingerprint_type"]        = validateFingerprintType,
 
 -- PREFERENCES - see prefs.lua for details
    -- Toggle Buttons
@@ -1159,6 +1162,7 @@ local known_parameters = {
    ["toggle_dropped_flows_alerts"]                 = validateBool,
    ["toggle_malware_probing"]                      = validateBool,
    ["toggle_ids_alerts"]                           = validateBool,
+   ["toggle_potentially_dangerous_protocols_alerts"] = validateBool,
    ["toggle_device_protocols_alerts"]              = validateBool,
    ["toggle_elephant_flows_alerts"]                = validateBool,
    ["toggle_ip_reassignment_alerts"]               = validateBool,
@@ -1219,6 +1223,7 @@ local known_parameters = {
    ["toggle_snmp_alerts_port_errors"]              = validateBool,
    ["snmp_port_load_threshold"]                    = validateNumber,
    ["toggle_midnight_stats_reset"]                 = validateBool,
+   ["toggle_ndpi_flows_rrds"]                      = validateBool,
 
    -- Input fields
    ["companion_interface"]                         = validateEmptyOr(validateInterface),
@@ -1294,7 +1299,7 @@ local known_parameters = {
    ["toggle_host_mask"]                            = validateChoiceInline({"0", "1", "2"}),
    ["topk_heuristic_precision"]                    = validateChoiceInline({"disabled", "more_accurate", "accurate", "aggressive"}),
    ["bridging_policy_target_type"]                 = validateChoiceInline({"per_protocol", "per_category", "both"}),
-   ["timeseries_driver"]                           = validateChoiceInline({"rrd", "influxdb"}),
+   ["timeseries_driver"]                           = validateChoiceInline({"rrd", "influxdb", "prometheus"}),
    ["ts_high_resolution"]                          = validateNumber,
    ["lbd_hosts_as_macs"]                           = validateBool,
    ["toggle_arp_matrix_generation"]                = validateBool,
@@ -1474,6 +1479,7 @@ local known_parameters = {
    ["allow_admin_access"]      = validateBool,
    ["accept_tos"]              = validateBool,
    ["no_timeout"]              = validateBool,
+   ["bubble_mode"]             = validateNumber,
    ["supernode"]               = validateSingleWord,
    ["ts_aggregation"]          = validateChoiceInline({"raw", "1h", "1d"}),
    ["fw_rule_id"]              = validateSingleWord,
@@ -1491,6 +1497,7 @@ local known_parameters = {
    ["hosts_only"]              = validateBool,
    ["rtt_hosts"]               = validateListOfTypeInline(validateSingleWord), -- TODO
    ["rtt_host"]                = validateSingleWord,
+   ["disabled_status"]         = validateListOfTypeInline(validateNumber),
 
    -- Containers
    ["pod"]                     = validateSingleWord,
@@ -1524,7 +1531,7 @@ local special_parameters = {   --[[Suffix validator]]     --[[Value Validator]]
 
 -- ALERTS (see alert_utils.lua)
    ["op_"]                     = { validateAlertDescriptor,   validateOperator },    -- key: an alert descriptor, value: alert operator
-   ["value_"]                  = { validateAlertDescriptor,   validateEmptyOr(validateNumber) }, -- key: an alert descriptor, value: alert value
+   ["value_"]                  = { validateAlertDescriptor,   validateAlertValue },  -- key: an alert descriptor, value: alert value
    ["slack_ch_"]               = { validateNumber, validateSingleWord },             -- slack channel name
 
 -- Protocol to categories match

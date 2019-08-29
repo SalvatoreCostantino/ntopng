@@ -31,6 +31,12 @@ IpAddress::IpAddress() {
 
 /* ******************************************* */
 
+IpAddress::IpAddress(const IpAddress& ipa) {
+  set(&ipa);
+}
+
+/* ******************************************* */
+
 void IpAddress::set(const char * const sym_addr) {
   if(strchr(sym_addr, '.')) {
     addr.ipVersion = 4, addr.ipType.ipv4 = inet_addr(sym_addr);
@@ -52,7 +58,7 @@ void IpAddress::set(union usa *ip) {
   if(ip->sin.sin_family != AF_INET6) {
     addr.ipVersion = 4, addr.ipType.ipv4 = ip->sin.sin_addr.s_addr;
   } else {
-    memcpy(&addr.ipType.ipv6, &ip->sin6.sin6_addr.s6_addr, sizeof(struct ndpi_in6_addr));
+    memcpy(&addr.ipType.ipv6, &ip->sin6.sin6_addr, sizeof(struct ndpi_in6_addr));
     addr.ipVersion = 6;
   }
 }
@@ -192,7 +198,7 @@ void IpAddress::compute_key() {
 
 /* ******************************************* */
 
-char* IpAddress::print(char *str, u_int str_len, u_int8_t bitmask) {
+char* IpAddress::print(char *str, u_int str_len, u_int8_t bitmask) const {
   str[0] = '\0';
   return(intoa(str, str_len, bitmask));
 }
@@ -319,7 +325,7 @@ bool IpAddress::match(const AddressTree * const tree) const {
 
 /* ****************************** */
 
-char* IpAddress::intoa(char* buf, u_short bufLen, u_int8_t bitmask) {
+char* IpAddress::intoa(char* buf, u_short bufLen, u_int8_t bitmask) const {
   if((addr.ipVersion == 4) || (addr.ipVersion == 0 /* Misconfigured */)) {
     bitmask = bitmask <= 32 ? bitmask : 32;
     u_int32_t a = ntohl(addr.ipType.ipv4);

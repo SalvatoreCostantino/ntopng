@@ -67,6 +67,8 @@ Ntop::Ntop(char *appName) {
   httpd = NULL, geo = NULL, mac_manufacturers = NULL;
   memset(&cpu_stats, 0, sizeof(cpu_stats));
   cpu_load = 0;
+  malicious_ja3 = malicious_ja3_shadow = NULL;
+  new_malicious_ja3 = new std::set<std::string>();
 
 #ifdef WIN32
   if(SHGetFolderPath(NULL, CSIDL_PERSONAL, NULL, SHGFP_TYPE_CURRENT, working_dir) != S_OK) {
@@ -175,19 +177,9 @@ Ntop::~Ntop() {
   if(httpd)
     delete httpd; /* Stop the http server before tearing down network interfaces */
 
-  /* Views are deleted first as they require access to the underlying sub-interfaces */
-  for(int i = 0; i < num_defined_interfaces; i++) {
-    if(iface[i] && iface[i]->isView()) {
-	iface[i]->shutdown();
-	delete(iface[i]);
-	iface[i] = NULL;
-      }
-  }
-
   for(int i = 0; i < num_defined_interfaces; i++) {
     if(iface[i]) {
-      iface[i]->shutdown();
-      delete(iface[i]);
+      delete iface[i];
       iface[i] = NULL;
     }
   }
@@ -221,6 +213,10 @@ Ntop::~Ntop() {
   }
 #endif
 #endif
+
+  if(new_malicious_ja3) delete new_malicious_ja3;
+  if(malicious_ja3) delete malicious_ja3;
+  if(malicious_ja3_shadow) delete malicious_ja3_shadow;
 
   if(redis)   { delete redis; redis = NULL;     }
   if(prefs)   { delete prefs; prefs = NULL;     }
@@ -417,10 +413,10 @@ void Ntop::start() {
   
   address->startResolveAddressLoop();
 
-  system_interface->allocateNetworkStats();
+  system_interface->allocateStructures();
 
   for(int i=0; i<num_defined_interfaces; i++)
-    iface[i]->allocateNetworkStats();  
+    iface[i]->allocateStructures();  
 
   /* Note: must start periodic activities loop only *after* interfaces have been
    * completely initialized.
@@ -482,8 +478,6 @@ void Ntop::start() {
 				 nap);
     _usleep(nap);
   }
-
-  runShutdownTasks();
 }
 
 /* ******************************************* */
@@ -2038,17 +2032,9 @@ void Ntop::initInterface(NetworkInterface *_if) {
 
 /* ******************************************* */
 
-void Ntop::sendNetworkInterfacesTermination() {
-  for(int i=0; i<num_defined_interfaces; i++)
-    iface[i]->sendTermination();
-}
-
-/* ******************************************* */
-
 /* NOTE: the multiple isShutdown checks below are necessary to reduce the shutdown time */
 void Ntop::runHousekeepingTasks() {
   for(int i=0; i<num_defined_interfaces; i++) {
-    if(globals->isShutdownRequested()) return;
     iface[i]->runHousekeepingTasks();
   }
 
@@ -2065,7 +2051,13 @@ void Ntop::runHousekeepingTasks() {
 
 void Ntop::runShutdownTasks() {
   for(int i=0; i<num_defined_interfaces; i++) {
-    iface[i]->runShutdownTasks();
+    if(!iface[i]->isView())
+      iface[i]->runShutdownTasks();
+  }
+
+  for(int i=0; i<num_defined_interfaces; i++) {
+    if(iface[i]->isView())
+      iface[i]->runShutdownTasks();
   }
 }
 
@@ -2086,8 +2078,7 @@ void Ntop::shutdown() {
 
     stats->print();
     iface[i]->shutdown();
-    ntop->getTrace()->traceEvent(TRACE_NORMAL, "Interface %s [running: %d]",
-				 iface[i]->get_name(), iface[i]->isRunning());
+    ntop->getTrace()->traceEvent(TRACE_NORMAL, "Polling shut down [interface: %s]", iface[i]->get_name());
   }
 }
 
@@ -2113,15 +2104,8 @@ void Ntop::shutdownAll() {
     delete shutdown_activity;
   }
 
-  ntop->getTrace()->traceEvent(TRACE_NORMAL, "Terminating network interfaces");
-
-  /* Now it is time to trear down running interfaces */
-  ntop->sendNetworkInterfacesTermination();
-
-  ntop->getTrace()->traceEvent(TRACE_NORMAL, "Waiting for the application to shutdown");
-
   ntop->getGlobals()->shutdown();
-  sleep(2); /* Wait until all threads know that we're shutting down... */
+  sleep(1); /* Wait until all threads know that we're shutting down... */
   ntop->shutdown();
 
 #ifndef WIN32
@@ -2306,4 +2290,27 @@ bool Ntop::getCpuLoad(float *out) {
     return(true);
   } else
     return(false);
+}
+
+/* ******************************************* */
+
+bool Ntop::isMaliciousJA3Hash(std::string md5_hash) {
+  /* save to avoid swap */
+  std::set<std::string> *hashes = malicious_ja3;
+
+  if(!hashes)
+    return(false);
+
+  return(hashes->find(md5_hash) != hashes->end());
+}
+
+/* ******************************************* */
+
+void Ntop::reloadJA3Hashes() {
+  if(malicious_ja3_shadow)
+    delete malicious_ja3_shadow;
+
+  malicious_ja3_shadow = malicious_ja3;
+  malicious_ja3 = new_malicious_ja3;
+  new_malicious_ja3 = new std::set<std::string>();
 }

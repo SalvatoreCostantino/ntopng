@@ -24,7 +24,7 @@
 
 class Host;
 
-class HostStats: public Checkpointable, public TimeseriesStats {
+class HostStats: public TimeseriesStats {
  protected:
   NetworkInterface *iface;
 
@@ -39,23 +39,23 @@ class HostStats: public Checkpointable, public TimeseriesStats {
 
   /* Written by NetworkInterface::processPacket thread */
   PacketStats sent_stats, recv_stats;
-  u_int32_t total_num_flows_as_client, total_num_flows_as_server;
 
-  /* Written by minute activity thread */
-  u_int64_t checkpoint_sent_bytes, checkpoint_rcvd_bytes;
-  bool checkpoint_set;
+  /* Used to store checkpoint data to build top talkers stats */
+  struct {
+    u_int64_t sent_bytes;
+    u_int64_t rcvd_bytes;
+  } checkpoints;
 
  public:
   HostStats(Host *_host);
   virtual ~HostStats();
 
-  void checkPointHostTalker(lua_State *vm, bool saveCheckpoint);
-  bool serializeCheckpoint(json_object *my_object, DetailsLevel details_level);
   virtual void incStats(time_t when, u_int8_t l4_proto, u_int ndpi_proto,
 		custom_app_t custom_app,
 		u_int64_t sent_packets, u_int64_t sent_bytes, u_int64_t sent_goodput_bytes,
 		u_int64_t rcvd_packets, u_int64_t rcvd_bytes, u_int64_t rcvd_goodput_bytes,
 		bool peer_is_unicast);
+  void checkpoint(lua_State* vm);
   virtual void getJSONObject(json_object *my_object, DetailsLevel details_level);
   inline void incFlagStats(bool as_client, u_int8_t flags)  { if (as_client) sent_stats.incFlagStats(flags); else recv_stats.incFlagStats(flags); };
 
@@ -63,6 +63,7 @@ class HostStats: public Checkpointable, public TimeseriesStats {
 
   inline void incSentStats(u_int pkt_len)           { sent_stats.incStats(pkt_len);       };
   inline void incRecvStats(u_int pkt_len)           { recv_stats.incStats(pkt_len);       };
+  inline void incnDPIFlows(u_int16_t l7_protocol)   { if(ndpiStats) ndpiStats->incFlowsStats(l7_protocol); };
   inline u_int32_t getTotalNumFlowsAsClient() const { return(total_num_flows_as_client);  };
   inline u_int32_t getTotalNumFlowsAsServer() const { return(total_num_flows_as_server);  };
   virtual void deserialize(json_object *obj)        {}

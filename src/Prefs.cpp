@@ -28,7 +28,7 @@ Prefs::Prefs(Ntop *_ntop) {
   ntop = _ntop, sticky_hosts = location_none,
     ignore_vlans = false, simulate_vlans = false, ignore_macs = false;
   local_networks = strdup(CONST_DEFAULT_HOME_NET "," CONST_DEFAULT_LOCAL_NETS);
-  local_networks_set = false, shutdown_when_done = false, flush_flows_on_shutdown = true;
+  local_networks_set = false, shutdown_when_done = false;
   enable_users_login = true, disable_localhost_login = false;
   enable_dns_resolution = sniff_dns_responses = true, use_promiscuous_mode = true;
   resolve_all_host_ip = false, online_license_check = false, service_license_check = false;
@@ -39,7 +39,7 @@ Prefs::Prefs(Ntop *_ntop) {
   data_dir = strdup(CONST_DEFAULT_DATA_DIR);
   enable_access_log = false, enable_sql_log = false, flow_aggregation_enabled = false;
   enable_flow_device_port_rrd_creation = false;
-  enable_ip_reassignment_alerts = false;
+  enable_ip_reassignment_alerts = false, reproduce_at_original_speed = false;
   enable_top_talkers = false, enable_idle_local_hosts_cache = false;
   enable_active_local_hosts_cache = false,
     enable_tiny_flows_export = true, enable_aggregated_flows_export_limit = false,
@@ -47,6 +47,7 @@ Prefs::Prefs(Ntop *_ntop) {
     enable_mining_alerts = CONST_DEFAULT_ALERT_MINING_ENABLED,
     enable_remote_to_remote_alerts = true,
     enable_dropped_flows_alerts = true, enable_device_protocols_alerts = false,
+    enable_potentially_dangerous_protocols_alerts = false,
     enable_syslog_alerts = false, enable_captive_portal = false, mac_based_captive_portal = false,
     enabled_malware_alerts = true, enabled_ids_alerts = true,
     enable_elephant_flows_alerts = false, enable_longlived_flows_alerts = true,
@@ -310,6 +311,7 @@ void usage() {
 	 "                                    | (default: %u)\n"
 	 "[--users-file|-u] <path>            | Users configuration file path\n"
 	 "                                    | Default: %s\n"
+	 "[--original-speed]                  | Reproduce (-i) the pcap file at original speed\n"
 #ifndef WIN32
 	 "[--pid|-G] <path>                   | Pid file path\n"
 #endif
@@ -583,6 +585,8 @@ void Prefs::reloadPrefsFromRedis() {
 							       CONST_DEFAULT_ALERT_DROPPED_FLOWS_ENABLED),
     enable_device_protocols_alerts  = getDefaultBoolPrefsValue(CONST_RUNTIME_PREFS_ALERT_DEVICE_PROTOCOLS,
 							       CONST_DEFAULT_ALERT_DEVICE_PROTOCOLS_ENABLED),
+    enable_potentially_dangerous_protocols_alerts = getDefaultBoolPrefsValue(CONST_RUNTIME_PREFS_ALERT_DANGEROUS_PROTOCOLS,
+							       CONST_DEFAULT_ALERT_DANGEROUS_PROTOCOLS_ENABLED),
     enable_elephant_flows_alerts  = getDefaultBoolPrefsValue(CONST_RUNTIME_PREFS_ALERT_ELEPHANT_FLOWS,
 							     CONST_DEFAULT_ALERT_ELEPHANT_FLOWS_ENABLED),
     enable_longlived_flows_alerts  = getDefaultBoolPrefsValue(CONST_RUNTIME_PREFS_ALERT_LONGLIVED_FLOWS,
@@ -747,6 +751,7 @@ static const struct option long_options[] = {
   { "callbacks-dir",                     required_argument, NULL, '3' },
   { "prefs-dir",                         required_argument, NULL, '4' },
   { "pcap-dir",                          required_argument, NULL, '5' },
+  { "original-speed",                    no_argument,       NULL, 208 },
   { "online-check",                      no_argument,       NULL, 209 },
   { "print-ndpi-protocols",              no_argument,       NULL, 210 },
   { "online-license-check",              no_argument,       NULL, 211 },
@@ -1348,6 +1353,10 @@ int Prefs::setOption(int optkey, char *optarg) {
     max_num_flows = max_val(atoi(optarg), 1024);
     break;
 
+  case 208:
+    reproduce_at_original_speed = true;
+    break;
+
   case 209:
     service_license_check = true;
     break;
@@ -1863,6 +1872,34 @@ time_t Prefs::pro_edition_demo_ends_at() {
 
 /* *************************************** */
 
+bool Prefs::in_longlived_whitelist(const Flow * f) const {
+  return f->get_protocol_category() == NDPI_PROTOCOL_CATEGORY_DATABASE;
+}
+
+/* *************************************** */
+
+bool Prefs::in_elephant_whitelist(const Flow * f) const {
+  return false;
+}
+
+/* *************************************** */
+
+bool Prefs::is_longlived_flow(const Flow * f) const {
+  bool ret = !in_longlived_whitelist(f)
+    && f->get_duration() > get_longlived_flow_duration();
+
+  return ret;
+}
+
+/* *************************************** */
+
+bool Prefs::is_elephant_flow(const Flow * f) const {
+  /* TODO */
+  return false;
+}
+
+/* *************************************** */
+
 /* Perform here post-initialization validations */
 
 void Prefs::validate() {
@@ -1875,7 +1912,6 @@ void Prefs::validate() {
   }
 #endif
 }
-
 
 /* *************************************** */
 

@@ -1091,9 +1091,17 @@ local icmp_v4_msgs = {
    { 3, 2, i18n("icmp_v4_msgs.type_3_2_destination_protocol_unreachable") },
    { 3, 3, i18n("icmp_v4_msgs.type_3_3_destination_port_unreachable") },
    { 3, 4, i18n("icmp_v4_msgs.type_3_4_fragmentation_required") },
+   { 3, 5, i18n("icmp_v4_msgs.type_3_5_source_route_failed") },
    { 3, 6, i18n("icmp_v4_msgs.type_3_6_destination_network_unknown") },
    { 3, 7, i18n("icmp_v4_msgs.type_3_7_destination_host_unknown") },
-   { 3, 0, i18n("icmp_v4_msgs.type_3_0_destination_unreachable") },
+   { 3, 8, i18n("icmp_v4_msgs.type_3_8_source_isolated") },
+   { 3, 9, i18n("icmp_v4_msgs.type_3_9_communication_network_prohibited") },
+   { 3, 10, i18n("icmp_v4_msgs.type_3_10_communication_host_prohibited") },
+   { 3, 11, i18n("icmp_v4_msgs.type_3_11_destination_network_unreachable") },
+   { 3, 12, i18n("icmp_v4_msgs.type_3_12_destination_host_unreachable") },
+   { 3, 13, i18n("icmp_v4_msgs.type_3_13_communication_prohibited") },
+   { 3, 14, i18n("icmp_v4_msgs.type_3_14_host_precedence_violation") },
+   { 3, 15, i18n("icmp_v4_msgs.type_3_15_precedence_cutoff") },
    { 4, 0, i18n("icmp_v4_msgs.type_4_0_source_quench") },
    { 5, 0, i18n("icmp_v4_msgs.type_5_0_redirect") },
    { 8, 0, i18n("icmp_v4_msgs.type_8_0_echo_request") },
@@ -1119,10 +1127,12 @@ local icmp_v6_msgs = {
    { 4, 0, i18n("icmp_v6_msgs.type_4_0_parameter_problem") },
    { 128, 0, i18n("icmp_v6_msgs.type_128_0_echo_request") },
    { 129, 0, i18n("icmp_v6_msgs.type_129_0_echo_reply") },
+   { 131, 0, i18n("icmp_v6_msgs.type_131_0_multicast_listener_report") },
    { 133, 0, i18n("icmp_v6_msgs.type_133_0_router_solicitation") },
    { 134, 0, i18n("icmp_v6_msgs.type_134_0_router_advertisement") },
    { 135, 0, i18n("icmp_v6_msgs.type_135_0_neighbor_solicitation") },
    { 136, 0, i18n("icmp_v6_msgs.type_136_0_neighbor_advertisement") },
+   { 143, 0, i18n("icmp_v6_msgs.type_143_0_multicast_listener_report_v2") },
 }
 
 function get_icmp_label(icmp_type, icmp_value, is_v4)
@@ -1141,12 +1151,9 @@ function get_icmp_label(icmp_type, icmp_value, is_v4)
       local i_value = tostring(k[2])
       local i_msg   = k[3]
 
-      -- print(i_type.."/"..icmp_type.."<br>\n")
-      if(i_type == icmp_type) then
-	 -- print("))"..i_type.."/"..icmp_type.."<br>\n")
-	 if(i_value == icmp_value) then
-	    return(i_msg)
-	 end
+      -- tprint("ICMP Type = "..icmp_type.." Value = "..icmp_value)
+      if i_type == icmp_type and i_value == icmp_value then
+        return(i_msg)
       end
    end
    
@@ -1227,12 +1234,16 @@ end
 
 -- #######################
 
-local function formatFlowHost(flow, cli_or_srv, historical_bounds)
-  local host_name = "<A HREF=\""..ntop.getHttpPrefix().."/lua/host_details.lua?"..hostinfo2url(flow,cli_or_srv)
+local function formatFlowHost(flow, cli_or_srv, historical_bounds, hyperlink_suffix)
+  local host_name = "<A HREF=\""..ntop.getHttpPrefix().."/lua/host_details.lua?"..hostinfo2url(flow, cli_or_srv)
+
   if historical_bounds then
     host_name = host_name .. string.format("&page=historical&epoch_begin=%u&epoch_end=%u&detail_view=top_l7_contacts", historical_bounds[1], historical_bounds[2])
+  else
+    host_name = host_name .. hyperlink_suffix
   end
   host_name = host_name.."\">"..shortenString(flowinfo2hostname(flow,cli_or_srv))
+
   if(flow[cli_or_srv .. ".systemhost"] == true) then
      host_name = host_name.." <i class='fa fa-flag' aria-hidden='true'></i>"
   end
@@ -1256,11 +1267,13 @@ local function formatFlowPort(flow, cli_or_srv, port, historical_bounds)
     return port_url
 end
 
-function getFlowLabel(flow, show_macs, add_hyperlinks, historical_bounds)
+function getFlowLabel(flow, show_macs, add_hyperlinks, historical_bounds, hyperlink_suffix)
    if flow == nil then return "" end
+   hyperlink_suffix = hyperlink_suffix or ""
 
    local cli_name = flowinfo2hostname(flow, "cli", true)
    local srv_name = flowinfo2hostname(flow, "srv", true)
+
    if((not isIPv4(cli_name)) and (not isIPv6(cli_name))) then cli_name = shortenString(cli_name) end
    if((not isIPv4(srv_name)) and (not isIPv6(srv_name))) then srv_name = shortenString(srv_name) end
 
@@ -1280,8 +1293,8 @@ function getFlowLabel(flow, show_macs, add_hyperlinks, historical_bounds)
    end
 
    if add_hyperlinks then
-      cli_name = formatFlowHost(flow, "cli", historical_bounds)
-      srv_name = formatFlowHost(flow, "srv", historical_bounds)
+      cli_name = formatFlowHost(flow, "cli", historical_bounds, hyperlink_suffix)
+      srv_name = formatFlowHost(flow, "srv", historical_bounds, hyperlink_suffix)
 
       if cli_port then
 	 cli_port = formatFlowPort(flow, "cli", cli_port, historical_bounds)
@@ -2052,12 +2065,19 @@ end
 
 local function printDropdownEntries(entries, base_url, param_arr, param_filter, curr_filter)
    for _, htype in ipairs(entries) do
+      if type(htype) == "string" then
+        -- plain html
+        print(htype)
+        goto continue
+      end
+
       param_arr[param_filter] = htype[1]
       print[[<li]]
 
       if htype[1] == curr_filter then print(' class="active"') end
 
       print[[><a href="]] print(getPageUrl(base_url, param_arr)) print[[">]] print(htype[2]) print[[</a></li>]]
+      ::continue::
    end
 end
 
@@ -2107,8 +2127,13 @@ function printActiveFlowsDropdown(base_url, page_params, ifstats, flowstats, is_
 
        local status_types = getFlowStatusTypes()
        local status_stats = flowstats["status"]
+       local first = true
        for t,desc in ipairs(status_types) do
           if t then
+             if first then
+                entries[#entries + 1] = '<li role="separator" class="divider"></li>'
+                first = false
+             end
              if status_stats[t] and status_stats[t].count > 0 then
                entries[#entries + 1] = {string.format("%u", t), desc.." ("..status_stats[t].count..")"}
              end
@@ -2277,6 +2302,14 @@ function printActiveFlowsDropdown(base_url, page_params, ifstats, flowstats, is_
 
     print[[, '<div class="btn-group pull-right">]]
     printIpVersionDropdown(base_url, ipversion_params)
+    print [[</div>']]
+
+    -- L4 protocol selector
+    local l4proto_params = table.clone(page_params)
+    l4proto_params["l4proto"] = nil
+
+    print[[, '<div class="btn-group pull-right">]]
+    printL4ProtoDropdown(base_url, l4proto_params, flowstats["l4_protocols"])
     print [[</div>']]
 
     -- VLAN selector

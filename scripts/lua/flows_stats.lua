@@ -37,6 +37,7 @@ local host = _GET["host"]
 local vhost = _GET["vhost"]
 local flowhosts_type = _GET["flowhosts_type"]
 local ipversion = _GET["version"]
+local l4proto = _GET["l4proto"]
 local vlan = _GET["vlan"]
 local icmp_type = _GET["icmp_type"]
 local icmp_code = _GET["icmp_cod"]
@@ -69,7 +70,17 @@ if (page == "flows" or page == nil) then
 
 print [[
       <hr>
-      <div id="table-flows"></div>
+      <div id="table-flows"></div>]]
+
+print(i18n("notes"))
+print[[<ul>
+  <li>]]
+print(i18n("flows_page.misbehaving_flows_node",
+    {url = "https://www.ntop.org/guides/ntopng/basic_concepts/alerts.html#misbehaving-flows"}))
+print[[</li>
+</ul>]]
+
+print[[
 	 <script>
    var url_update = "]]
 
@@ -97,6 +108,10 @@ end
 
 if(ipversion ~= nil) then
   page_params["version"] = ipversion
+end
+
+if(l4proto ~= nil) then
+  page_params["l4proto"] = l4proto
 end
 
 if(deviceIP ~= nil) then

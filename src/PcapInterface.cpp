@@ -121,8 +121,6 @@ PcapInterface::PcapInterface(const char *name) : NetworkInterface(name) {
 /* **************************************************** */
 
 PcapInterface::~PcapInterface() {
-  shutdown();
-
   if(pcap_handle) {
     pcap_close(pcap_handle);
     pcap_handle = NULL;
@@ -183,6 +181,7 @@ static void* packetPollLoop(void* ptr) {
   PcapInterface *iface = (PcapInterface*)ptr;
   pcap_t *pd;
   FILE *pcap_list = iface->get_pcap_list();
+  struct timeval startTS, firstPktTS;
   int fd = -1;
 
   /* Wait until the initialization completes */
@@ -238,6 +237,8 @@ static void* packetPollLoop(void* ptr) {
     fd = pcap_get_selectable_fd(pd);
 #endif
 
+    firstPktTS.tv_sec = 0;
+
     while((pd != NULL) 
 	  && iface->isRunning() 
 	  && (!ntop->getGlobals()->isShutdown())) {
@@ -260,8 +261,35 @@ static void* packetPollLoop(void* ptr) {
 	  continue;
 	}
       }
-      
+
       if((rc = pcap_next_ex(pd, &hdr, &pkt)) > 0) {
+	if(iface->reproducePcapOriginalSpeed()) {
+	  struct timeval now;
+	    
+	  gettimeofday(&now, NULL);
+
+	  if(firstPktTS.tv_sec == 0) {
+            startTS = now;
+            firstPktTS = hdr->ts;
+          } else {
+            u_int32_t packetTimeDelta = Utils::msTimevalDiff(&hdr->ts, &firstPktTS);
+            u_int32_t fromStartTimeDelta = Utils::msTimevalDiff(&now, &startTS);
+
+            if (packetTimeDelta > fromStartTimeDelta) {
+              u_int32_t sleepMs = packetTimeDelta - fromStartTimeDelta;
+                
+	      ntop->getTrace()->traceEvent(TRACE_DEBUG, "Sleeping %.3f sec", ((float)(sleepMs))/1000);
+		
+	      usleep(sleepMs*1000);
+
+	      /* Recompute after sleep */
+	      gettimeofday(&now, NULL);
+	    }
+	  }
+
+	  hdr->ts = now;
+	}
+	  
 	if((pkt != NULL) && (hdr->caplen > 0)) {
 	  u_int16_t p;
 	  Host *srcHost = NULL, *dstHost = NULL;
@@ -303,8 +331,8 @@ static void* packetPollLoop(void* ptr) {
 
   } while(pcap_list != NULL);
 
-  if(iface->read_from_pcap_dump()) {
-    iface->guessAllnDPIProtocols();
+  if(iface->read_from_pcap_dump() && !iface->reproducePcapOriginalSpeed()) {
+    iface->processAllActiveFlows();
     iface->guessAllBroadcastDomainHosts();
   }
 
@@ -347,24 +375,15 @@ static void* packetPollLoop(void* ptr) {
 
 /* **************************************************** */
 
-void PcapInterface::startPacketPolling() { 
+void PcapInterface::startPacketPolling() {
+  if(reproducePcapOriginalSpeed()) {
+    /* Enable purge */
+    purge_idle_flows_hosts = true;
+  }
+
   pthread_create(&pollLoop, NULL, packetPollLoop, (void*)this);  
   pollLoopCreated = true;
   NetworkInterface::startPacketPolling();
-}
-
-/* **************************************************** */
-
-void PcapInterface::shutdown() {
-  if(running) {
-    void *res;
-
-    NetworkInterface::shutdown();
-#ifndef WIN32
-    pthread_kill(pollLoop, SIGTERM);
-#endif
-    pthread_join(pollLoop, &res);
-  }
 }
 
 /* **************************************************** */
@@ -431,4 +450,11 @@ void PcapInterface::updateDirectionStats() {
   }
 }
 
+/* **************************************************** */
+
+bool PcapInterface::reproducePcapOriginalSpeed() const {
+  return(read_pkts_from_pcap_dump && ntop->getPrefs()->reproduceOriginalSpeed());
+}
+
 #endif
+

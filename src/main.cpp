@@ -63,7 +63,12 @@ static void nohup_after_shutdown_command(const char * const after_shutdown_comma
 
 /* ******************************** */
 
-void sigproc(int sig) {
+#ifdef WIN32
+BOOL WINAPI sigproc(DWORD sig)
+#else
+void sigproc(int sig)
+#endif
+ {
   static int called = 0;
   
   if(called) {
@@ -113,11 +118,10 @@ int main(int argc, char *argv[])
   char path[MAX_PATH];
   FILE *fd;
   ThreadedActivity *boot_activity;
-    
+
 #ifdef WIN32
   initWinsock32();
-#endif
-
+#else
   sqlite3_shutdown();
   /* Multi-thread.
      In this mode, SQLite can be safely used by multiple threads
@@ -129,6 +133,7 @@ int main(int argc, char *argv[])
     exit(1);
   }
   sqlite3_initialize();
+#endif
 
   if((ntop = new(std::nothrow)  Ntop(argv[0])) == NULL) _exit(0);
   if((prefs = new(std::nothrow) Prefs(ntop)) == NULL)   _exit(0);
@@ -225,7 +230,7 @@ int main(int argc, char *argv[])
         if(iface == NULL && strncmp(ifName, "nf:", 3) == 0)
           iface = new NetfilterInterface(ifName);
 #endif
-	
+
 #ifdef HAVE_PF_RING
 	if((iface == NULL) && (!strstr(ifName, ".pcap"))) {
 	  errno = 0;
@@ -393,7 +398,9 @@ int main(int argc, char *argv[])
   ntop->getTrace()->traceEvent(TRACE_NORMAL, "Scripts/HTML pages directory: %s",
 			       ntop->get_install_dir());
 
-#ifndef WIN32
+#ifdef WIN32
+  SetConsoleCtrlHandler(sigproc, TRUE);
+#else
   signal(SIGHUP,  sighup);
   signal(SIGINT,  sigproc);
   signal(SIGTERM, sigproc);
@@ -406,11 +413,14 @@ int main(int argc, char *argv[])
   ntop->getTrace()->traceEvent(TRACE_NORMAL, "-----------------------------------------------------------");
 #endif
 
-  /* this returns after a shutdown has been requested */
+  /* This method returns after a shutdown has been requested.
+     runHousekeepingTasks() is performed within this method untile it has returned. */
   ntop->start();
 
-  /* perform all the necessary cleanup and wait for other threads termination */
+  /* Perform all the necessary cleanup and wait for other threads termination */
   ntop->shutdownAll();
+
+  ntop->runShutdownTasks();
 
   delete ntop;
   ntop = NULL;

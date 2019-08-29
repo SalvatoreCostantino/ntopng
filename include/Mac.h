@@ -44,7 +44,6 @@ class Mac : public GenericHashEntry, public SerializableElement {
   char * model;
   char * ssid;
   
-  OperatingSystem os;
   bool source_mac;
   DeviceType device_type;
 #ifdef NTOPNG_PRO
@@ -52,7 +51,6 @@ class Mac : public GenericHashEntry, public SerializableElement {
 #endif
   /* END Mac data: */
 
-  void updateFingerprint();
   void checkDeviceTypeFromManufacturer();
   void readDHCPCache();
   void freeMacData();
@@ -116,17 +114,16 @@ class Mac : public GenericHashEntry, public SerializableElement {
   char * getDHCPName(char * const buf, ssize_t buf_size);
   bool idle();
   void lua(lua_State* vm, bool show_details, bool asListElement);
-  inline char* get_string_key(char *buf, u_int buf_len) { return(Utils::formatMac(mac, buf, buf_len)); };
+  virtual char* get_string_key(char *buf, u_int buf_len) const { return(Utils::formatMac(mac, buf, buf_len)); };
   inline int16_t findAddress(AddressTree *ptree)        { return ptree ? ptree->findMac(mac) : -1;     };
   inline char* print(char *str, u_int str_len)          { return(Utils::formatMac(mac, str, str_len)); };
   void updateHostPool(bool isInlineCall, bool firstUpdate = false);
-  inline void setOperatingSystem(OperatingSystem _os) { os = ((device_type != device_networking) ? _os : os_unknown); }
-  inline OperatingSystem getOperatingSystem()         { return((device_type != device_networking) ? os : os_unknown); }
   void inlineSetModel(const char * const m);
-  void inlineSetFingerprint(const char * const f);
+  bool inlineSetFingerprint(const char * const f);
   void inlineSetSSID(const char * const s);
   void inlineSetDHCPName(const char * const dhcp_name);
   inline u_int16_t get_host_pool() { return(host_pool_id); }
+  inline const char* getFingerprint() { return(fingerprint); }
 
   inline void requestStatsReset()                        { stats_reset_requested = true; };
   inline void requestDataReset()                         { data_delete_requested = true; requestStatsReset(); };

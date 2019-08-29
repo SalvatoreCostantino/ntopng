@@ -24,7 +24,7 @@
 /* *************************************** */
 
 HostStats::HostStats(Host *_host) : TimeseriesStats(_host) {
-  iface = host->getInterface();
+  iface = _host->getInterface();
 
   /* NOTE: deleted by ~GenericTrafficElement */
   ndpiStats = new nDPIStats();
@@ -35,14 +35,12 @@ HostStats::HostStats(Host *_host) : TimeseriesStats(_host) {
   total_activity_time = 0;
   last_packets = 0, last_pkts_thpt = pkts_thpt = 0, pkts_thpt_trend = trend_unknown;
   last_update_time.tv_sec = 0, last_update_time.tv_usec = 0;
-  total_num_flows_as_client = total_num_flows_as_server = 0;
-
-  checkpoint_set = false;
-  checkpoint_sent_bytes = checkpoint_rcvd_bytes = 0;
 
 #ifdef NTOPNG_PRO
   quota_enforcement_stats = quota_enforcement_stats_shadow = NULL;
 #endif
+
+  memset(&checkpoints, 0, sizeof(checkpoints));
 }
 
 /* *************************************** */
@@ -52,6 +50,29 @@ HostStats::~HostStats() {
   if(quota_enforcement_stats)        delete quota_enforcement_stats;
   if(quota_enforcement_stats_shadow) delete quota_enforcement_stats_shadow;
 #endif
+}
+
+/* *************************************** */
+
+/* NOTE: this function is used by Lua to create the minute-by-minute host top talkers,
+   both for remote and local hosts. Top talkerts are created by doing a checkpoint
+   of the current value. */
+void HostStats::checkpoint(lua_State* vm) {
+  u_int64_t new_val;
+
+  lua_newtable(vm);
+
+  lua_newtable(vm);
+
+  lua_push_uint64_table_entry(vm, "sent", (new_val = getNumBytesSent()) - checkpoints.sent_bytes);
+  checkpoints.sent_bytes = new_val;
+
+  lua_push_uint64_table_entry(vm, "rcvd", (new_val = getNumBytesRcvd()) - checkpoints.rcvd_bytes);
+  checkpoints.rcvd_bytes = new_val;
+
+  lua_pushstring(vm, "delta");
+  lua_insert(vm, -2);
+  lua_settable(vm, -3);
 }
 
 /* *************************************** */
@@ -67,7 +88,6 @@ void HostStats::getJSONObject(json_object *my_object, DetailsLevel details_level
     json_object_object_add(my_object, "unreachable_flows.as_server", json_object_new_int(unreachable_flows_as_server));
     json_object_object_add(my_object, "host_unreachable_flows.as_client", json_object_new_int(host_unreachable_flows_as_client));
     json_object_object_add(my_object, "host_unreachable_flows.as_server", json_object_new_int(host_unreachable_flows_as_server));
-    json_object_object_add(my_object, "total_alerts", json_object_new_int(total_alerts));
 
     json_object_object_add(my_object, "total_activity_time", json_object_new_int(total_activity_time));
     GenericTrafficElement::getJSONObject(my_object, iface);
@@ -113,68 +133,6 @@ void HostStats::lua(lua_State* vm, bool mask_host, DetailsLevel details_level, b
     ((GenericTrafficElement*)this)->lua(vm, details_level >= details_higher);
     ((TimeseriesStats*)this)->luaStats(vm, iface, details_level >= details_higher, details_level >= details_max, tsLua);
   }
-}
-
-/* *************************************** */
-
-bool HostStats::serializeCheckpoint(json_object *my_object, DetailsLevel details_level) {
-  json_object_object_add(my_object, "sent", sent.getJSONObject());
-  json_object_object_add(my_object, "rcvd", rcvd.getJSONObject());
-
-  if (details_level >= details_high) {
-    json_object_object_add(my_object, "total_activity_time", json_object_new_int(total_activity_time));
-    json_object_object_add(my_object, "seen.last", json_object_new_int64(host->get_last_seen()));
-    json_object_object_add(my_object, "ndpiStats", ndpiStats->getJSONObjectForCheckpoint(iface));
-    json_object_object_add(my_object, "flows.as_client", json_object_new_int(getTotalNumFlowsAsClient()));
-    json_object_object_add(my_object, "flows.as_server", json_object_new_int(getTotalNumFlowsAsServer()));
-
-    /* Protocol stats */
-    l4stats.serialize(my_object);
-
-    /* packet stats */
-    json_object_object_add(my_object, "pktStats.sent", sent_stats.getJSONObject());
-    json_object_object_add(my_object, "pktStats.recv", recv_stats.getJSONObject());
-
-    /* throughput stats */
-    json_object_object_add(my_object, "throughput_bps", json_object_new_double(bytes_thpt));
-    json_object_object_add(my_object, "throughput_trend_bps", json_object_new_string(Utils::trend2str(bytes_thpt_trend)));
-    json_object_object_add(my_object, "throughput_pps", json_object_new_double(pkts_thpt));
-    json_object_object_add(my_object, "throughput_trend_pps", json_object_new_string(Utils::trend2str(pkts_thpt_trend)));
-  }
-
-  return true;
-}
-
-/* *************************************** */
-
-void HostStats::checkPointHostTalker(lua_State *vm, bool saveCheckpoint) {
-  lua_newtable(vm);
-
-  if (! checkpoint_set) {
-    if(saveCheckpoint) checkpoint_set = true;
-  } else {
-    lua_newtable(vm);
-    lua_push_uint64_table_entry(vm, "sent", checkpoint_sent_bytes);
-    lua_push_uint64_table_entry(vm, "rcvd", checkpoint_rcvd_bytes);
-    lua_pushstring(vm, "previous");
-    lua_insert(vm, -2);
-    lua_settable(vm, -3);
-  }
-
-  u_int32_t sent_bytes = sent.getNumBytes();
-  u_int32_t rcvd_bytes = rcvd.getNumBytes();
-
-  if(saveCheckpoint) {
-    checkpoint_sent_bytes = sent_bytes;
-    checkpoint_rcvd_bytes = rcvd_bytes;
-  }
-
-  lua_newtable(vm);
-  lua_push_uint64_table_entry(vm, "sent", sent_bytes);
-  lua_push_uint64_table_entry(vm, "rcvd", rcvd_bytes);
-  lua_pushstring(vm, "current");
-  lua_insert(vm, -2);
-  lua_settable(vm, -3);
 }
 
 /* *************************************** */

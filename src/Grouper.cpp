@@ -75,11 +75,7 @@ bool Grouper::inGroup(Host *h) {
     break;
     
   case column_os:
-    {
-      c = h->get_os(buf, sizeof(buf));
-      return (strcmp(group_id_s, c) == 0) ? true : false;
-    }
-    break;
+    return(h->getOS() == group_id_i);
 
   default:
     return false;
@@ -148,9 +144,9 @@ int8_t Grouper::newGroup(Host *h) {
     break;
 
   case column_os:
-    c = h->get_os(buf, sizeof(buf));
-    group_id_s  = strdup(c);
-    group_label = strdup(group_id_s);
+    group_id_i = h->getOS();
+    sprintf(buf, "%i", h->getOS());
+    group_label = strdup(buf);
     break;
 
   default:
@@ -174,7 +170,7 @@ int8_t Grouper::incStats(Host *h) {
     stats.bytes_rcvd += h->getNumBytesRcvd(),
     stats.num_flows += h->getNumActiveFlows(),
     stats.num_dropped_flows += h->getNumDroppedFlows(),
-    stats.num_alerts += h->getNumAlerts(),
+    stats.num_alerts += h->getNumTriggeredAlerts(),
     stats.throughput_bps += h->getBytesThpt(),
     stats.throughput_pps += h->getPacketsThpt(),
     stats.throughput_trend_bps_diff += h->getThptTrendDiff();

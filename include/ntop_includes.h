@@ -90,7 +90,9 @@
 #include <zmq.h>
 #include <assert.h>
 #include <fcntl.h>
+#ifndef WIN32
 #include <grp.h>
+#endif
 #ifdef HAVE_TEST_MODE
 #include <libgen.h>
 #endif
@@ -180,21 +182,24 @@ using namespace std;
 #include "BroadcastDomains.h"
 #include "IpAddress.h"
 #include "Ping.h"
+#include "TrafficStats.h"
+#include "TcpPacketStats.h"
 #include "ntop_typedefs.h"
+#include "Alert.h"
+#include "AlertableEntity.h"
 #include "Trace.h"
 #include "ProtoStats.h"
 #include "Utils.h"
 #include "NtopGlobals.h"
-#include "Checkpointable.h"
-#include "TrafficStats.h"
 #include "nDPIStats.h"
-#include "FlowStatusStats.h"
+#include "FlowStats.h"
 #ifdef NTOPNG_PRO
 #include "CustomAppMaps.h"
 #include "CustomAppStats.h"
 #endif
-#include "TcpPacketStats.h"
 #include "GenericTrafficElement.h"
+#include "AlertCounter.h"
+#include "NetworkStats.h"
 #include "ContainerStats.h"
 #include "ParsedFlowCore.h"
 #include "ParsedeBPF.h"
@@ -214,7 +219,6 @@ using namespace std;
 #include "CounterTrend.h"
 #include "LRUMacIP.h"
 #include "FlowInterfacesStats.h"
-#include "HostPoolStats.h"
 #ifdef HAVE_LDAP
 #include "LdapAuthenticator.h"
 #endif
@@ -222,13 +226,12 @@ using namespace std;
 #include "FrequentStringItems.h"
 #include "FrequentNumericItems.h"
 #include "FrequentTrafficItems.h"
+#include "HostPoolStats.h"
 #include "HostPools.h"
 #include "Fingerprint.h"
 #include "Prefs.h"
 #include "SerializableElement.h"
-#include "CommunityIdFlowHash.h"
 #include "DnsStats.h"
-#include "NetworkStats.h"
 #ifndef HAVE_NEDGE
 #include "SNMP.h"
 #endif
@@ -271,6 +274,7 @@ using namespace std;
 #include "HostTimeseriesPoint.h"
 #include "SPSCQueue.h"
 #include "L4Stats.h"
+#include "AlertsQueue.h"
 #include "NetworkInterfaceTsPoint.h"
 #include "NetworkInterface.h"
 #ifndef HAVE_NEDGE
@@ -280,7 +284,6 @@ using namespace std;
 #ifdef HAVE_PF_RING
 #include "PF_RINGInterface.h"
 #endif
-#include "AlertCounter.h"
 #include "FlowAlertCounter.h"
 #include "GenericHash.h"
 #include "VirtualHost.h"
@@ -334,6 +337,9 @@ using namespace std;
 #include "TimeseriesStats.h"
 #include "HostStats.h"
 #include "LocalHostStats.h"
+#include "LuaEngine.h"
+#include "AlertCheckLuaEngine.h"
+#include "PortContactStats.h"
 #include "Host.h"
 #include "LocalHost.h"
 #include "RemoteHost.h"
@@ -353,19 +359,11 @@ using namespace std;
 #include "ThreadedActivity.h"
 #include "ThreadPool.h"
 #include "PeriodicActivities.h"
-#include "LuaEngine.h"
 #include "MacManufacturers.h"
 #include "AddressResolution.h"
 #include "HTTPserver.h"
 #include "Paginator.h"
 #include "Ntop.h"
-
-#ifdef WIN32
-extern "C" {
-  const char *strcasestr(const char *haystack, const char *needle);
-  int strncasecmp(const char *s1, const char *s2, unsigned int n);
-};
-#endif
 
 #ifdef NTOPNG_PRO
 #include "ntoppro_defines.h"

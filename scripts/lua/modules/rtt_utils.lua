@@ -6,12 +6,12 @@ local rtt_utils = {}
 
 -- ##############################################
 
-local rtt_hosts_key = "ntopng.prefs.system_rtt_hosts"
+local rtt_hosts_key = string.format("ntopng.prefs.ifid_%d.system_rtt_hosts", getSystemInterfaceId())
 
 -- ##############################################
 
 local function rtt_last_updates_key(key)
-  return("ntopng.cache.system_rtt_hosts.last_update." .. key)
+  return(string.format("ntopng.cache.ifid_%d.system_rtt_hosts.last_update." .. key, getSystemInterfaceId()))
 end
 
 -- ##############################################
@@ -106,6 +106,14 @@ end
 -- ##############################################
 
 function rtt_utils.removeHost(host)
+  local alerts_api = require("alerts_api")
+  local rtt_host_entity = alerts_api.pingedHostEntity(host)
+  local old_ifname = ifname
+
+  interface.select(getSystemInterfaceId())
+  alerts_api.releaseEntityAlerts(rtt_host_entity)
+  interface.select(old_ifname)
+
   ntop.delHashCache(rtt_hosts_key, host)
 end
 

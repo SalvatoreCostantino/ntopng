@@ -26,6 +26,7 @@
 
 class ParsedeBPF {
  private:
+  bool server_info;
   bool free_memory;
 
  public:
@@ -40,8 +41,12 @@ class ParsedeBPF {
   ParsedeBPF(const ParsedeBPF &pe);
   virtual ~ParsedeBPF();
 
-  void update(const ParsedeBPF * const pe);
+  inline void swap() { server_info = !server_info; };	
+
+  bool update(const ParsedeBPF * const pe);
+  bool isServerInfo() const;
   void print();
+
 };
 
 #endif /* _PARSED_EBPF_H_ */
